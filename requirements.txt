@@ -1,0 +1,7 @@
+pandas
+geopandas
+shapely
+numpy
+Pillow
+requests
+opencv-python
