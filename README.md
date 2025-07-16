@@ -75,7 +75,9 @@ pip install -r requirements.txt
            streetview_csv_path='example.csv',  # 街景点CSV
            baidu_ak='你的百度API Key',
            output_dir='output',
-           zoom=3
+           zoom=3#
+           #save_front_back=True  # 如需保存前后方视图，取消注释
+           save_every=50  # 新增参数：每多少个点保存一次，断点续存时，每多少个点保存一次
        )
    ```
 
