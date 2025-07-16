@@ -3,6 +3,7 @@ import pandas as pd
 from shapely.geometry import Point
 import cv2
 import numpy as np
+from tqdm import tqdm 
 
 from landuse_utils import read_landuse_gdb
 from streetview_utils import read_streetview_points, wgs84_to_bd09mc, get_streetview_metadata, download_panorama_image
@@ -17,15 +18,44 @@ def main(
     baidu_ak='',
     output_dir='output',
     zoom=3,
-    save_front_back=False
+    save_front_back=False,
+    save_every=50 
 ):
     os.makedirs(output_dir, exist_ok=True)
     img_dir = os.path.join(output_dir, 'images')
     os.makedirs(img_dir, exist_ok=True)
     mapping = []
+    # 断点续存：读取已处理的id或(x, y)
+    processed_keys = set()
+    mapping_csv = os.path.join(output_dir, 'streetview_landuse_mapping.csv')
+    if os.path.exists(mapping_csv):
+        try:
+            old_df = pd.read_csv(mapping_csv)
+            if 'id' in old_df.columns:
+                processed_keys = set(old_df['id'].astype(str))
+            else:
+                processed_keys = set(zip(old_df['x'], old_df['y']))
+            # 断点续存时，先加载已有内容
+            mapping = old_df.to_dict('records')
+            print(f"[断点续存] 已检测到 {len(processed_keys)} 个已处理点，将跳过这些点。")
+        except Exception as e:
+            print(f"[断点续存] 读取已有 mapping 文件失败：{e}")
     landuse_gdf = read_landuse_gdb(landuse_gdb_path, landuse_layer, landuse_id_col)
     sv_points = read_streetview_points(streetview_csv_path)
-    for idx, pt_info in enumerate(sv_points):
+    # 过滤未处理点
+    filtered_points = []
+    for pt_info in sv_points:
+        if len(pt_info) == 3:
+            id_val, x, y = pt_info
+            key = str(id_val)
+        else:
+            id_val = None
+            x, y = pt_info
+            key = (x, y)
+        if key not in processed_keys:
+            filtered_points.append(pt_info)
+    print(f"共 {len(sv_points)} 个点，未处理 {len(filtered_points)} 个点。")
+    for idx, pt_info in enumerate(tqdm(filtered_points, desc='Processing streetview points')):
         if len(pt_info) == 3:
             id_val, x, y = pt_info
         else:
@@ -106,9 +136,12 @@ def main(
             print(f"Processed streetview {sid} at {x},{y}")
         except Exception as e:
             print(f"Error processing point {x},{y}: {e}")
-    df = pd.DataFrame(mapping)
-    df.to_csv(os.path.join(output_dir, 'streetview_landuse_mapping.csv'), index=False, encoding='utf-8')
-    df.to_json(os.path.join(output_dir, 'streetview_landuse_mapping.json'), orient='records', force_ascii=False)
+        # 定期保存
+        if ((idx + 1) % save_every == 0) or (idx == len(filtered_points) - 1):
+            df = pd.DataFrame(mapping)
+            df.to_csv(os.path.join(output_dir, 'streetview_landuse_mapping.csv'), index=False, encoding='utf-8')
+            df.to_json(os.path.join(output_dir, 'streetview_landuse_mapping.json'), orient='records', force_ascii=False)
+            print(f"[进度保存] 已保存 {len(mapping)} 条记录。")
     print(f"Done! Mapping table saved to {output_dir}")
 
 if __name__ == '__main__':
@@ -121,4 +154,5 @@ if __name__ == '__main__':
         output_dir='output_dir',#输出目录
         zoom=3,#街景图缩放级别
         #save_front_back=True  # 如需保存前后方视图，取消注释
+        save_every=50  # 新增参数：每多少个点保存一次，断点续存时，每多少个点保存一次
     ) 

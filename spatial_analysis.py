@@ -8,4 +8,4 @@ def judge_left_right(streetview_pt, road_dir, landuse_centroid):
     road_vec = np.array([cos(theta), sin(theta)])
     landuse_vec = np.array([dx, dy])
     cross = road_vec[0] * landuse_vec[1] - road_vec[1] * landuse_vec[0]
-    return 'R' if cross > 0 else 'L' 
+    return 'L' if cross > 0 else 'R' 
