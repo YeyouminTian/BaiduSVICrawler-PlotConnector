@@ -9,17 +9,63 @@ from landuse_utils import read_landuse_gdb
 from streetview_utils import read_streetview_points, wgs84_to_bd09mc, get_streetview_metadata, download_panorama_image
 from image_utils import equirectangular_to_perspective
 from spatial_analysis import judge_left_right
+from topology_utils import (read_road_gdb, build_streetview_road_mapping, 
+                           build_landuse_topology, build_multi_landuse_mapping,
+                           generate_traversal_config, generate_multi_landuse_mapping)
+
+def rename_images_by_topology(config_df, img_dir):
+    """根据拓扑关系重命名图片文件"""
+    print(f"开始重命名图片文件，共 {len(config_df)} 条配置...")
+    
+    # 创建旧文件名到新文件名的映射
+    rename_mapping = {}
+    
+    for _, row in config_df.iterrows():
+        landuse_id = row['landuse_id']
+        road_id = row['road_id']
+        streetview_id = row['streetview_id']
+        
+        # 新文件名格式：P{landuse_id}_R{道路ID}_S{街景点ID}_{L/R}.jpg
+        new_filename_L = f"P{landuse_id}_R{road_id}_S{streetview_id}_L.jpg"
+        new_filename_R = f"P{landuse_id}_R{road_id}_S{streetview_id}_R.jpg"
+        
+        # 旧文件名格式：{streetview_id}_L.jpg, {streetview_id}_R.jpg
+        old_filename_L = f"{streetview_id}_L.jpg"
+        old_filename_R = f"{streetview_id}_R.jpg"
+        
+        rename_mapping[old_filename_L] = new_filename_L
+        rename_mapping[old_filename_R] = new_filename_R
+    
+    # 执行重命名
+    renamed_count = 0
+    for old_name, new_name in rename_mapping.items():
+        old_path = os.path.join(img_dir, old_name)
+        new_path = os.path.join(img_dir, new_name)
+        
+        if os.path.exists(old_path):
+            try:
+                os.rename(old_path, new_path)
+                renamed_count += 1
+            except Exception as e:
+                print(f"重命名失败 {old_name} -> {new_name}: {e}")
+        else:
+            print(f"文件不存在: {old_path}")
+    
+    print(f"重命名完成，共重命名 {renamed_count} 个文件")
 
 def main(
     landuse_gdb_path,
     landuse_layer='landuse',
     landuse_id_col='OBJECTID',
+    road_layer='road_街景测试范围_0712',
+    road_id_col='OBJECTID',
     streetview_csv_path='resources/example.csv',
     baidu_ak='',
     output_dir='output',
     zoom=3,
     save_front_back=False,
-    save_every=50 
+    save_every=50,
+    build_topology=True
 ):
     os.makedirs(output_dir, exist_ok=True)
     img_dir = os.path.join(output_dir, 'images')
@@ -40,8 +86,17 @@ def main(
             print(f"[断点续存] 已检测到 {len(processed_keys)} 个已处理点，将跳过这些点。")
         except Exception as e:
             print(f"[断点续存] 读取已有 mapping 文件失败：{e}")
+    # 读取数据
+    print("正在读取数据...")
     landuse_gdf = read_landuse_gdb(landuse_gdb_path, landuse_layer, landuse_id_col)
+    road_gdf = read_road_gdb(landuse_gdb_path, road_layer, road_id_col)
     sv_points = read_streetview_points(streetview_csv_path)
+    
+    print(f"读取完成：地块 {len(landuse_gdf)} 个，道路 {len(road_gdf)} 条，街景点 {len(sv_points)} 个")
+    
+    # 建立街景点-道路映射
+    print("正在建立街景点-道路映射...")
+    streetview_road_mapping = build_streetview_road_mapping(sv_points, road_gdf, road_id_col)
     # 过滤未处理点
     filtered_points = []
     for pt_info in sv_points:
@@ -68,7 +123,7 @@ def main(
                 print(f"No streetview at {x},{y}")
                 continue
             heading = float(meta.get('Heading', 0))
-            movedir = float(meta.get('MoveDir', heading))
+            # 使用heading作为基准，不使用movedir
             capture_time = meta.get('Time', '')
             pano_img = download_panorama_image(sid, zoom=zoom)
             if pano_img is None:
@@ -80,9 +135,20 @@ def main(
             fov_v = 90
             left_view = equirectangular_to_perspective(pano_np, fov_h, fov_v, 0, 0, out_size)
             right_view = equirectangular_to_perspective(pano_np, fov_h, fov_v, 180, 0, out_size)
+            
+            # 获取街景点对应的道路ID
+            road_id = None
+            for sv_mapping in streetview_road_mapping:
+                if sv_mapping['original_id'] == id_val:
+                    road_id = sv_mapping['road_id']
+                    break
+            
+            # 使用新的命名规则：P{landuse_id}_R{道路ID}_S{街景点ID}_{L/R}.jpg
+            # 暂时使用街景点ID，后续会根据landuse关联更新
             base_name = str(id_val) if id_val is not None else str(sid)
-            fname_L = f"{base_name}_L.jpg"
-            fname_R = f"{base_name}_R.jpg"
+            fname_L = f"{base_name}_L.jpg"  # 临时命名，后续会重命名
+            fname_R = f"{base_name}_R.jpg"  # 临时命名，后续会重命名
+            
             cv2.imwrite(os.path.join(img_dir, fname_L), left_view)
             cv2.imwrite(os.path.join(img_dir, fname_R), right_view)
             if save_front_back:
@@ -93,22 +159,50 @@ def main(
                 cv2.imwrite(os.path.join(img_dir, fname_F), front_view)
                 cv2.imwrite(os.path.join(img_dir, fname_B), back_view)
             pt = Point(x, y)
-            left_min_dist = float('inf')
-            right_min_dist = float('inf')
+            # 先找到最近的两个地块（不考虑左右）
+            landuse_distances = []
+            for _, row in landuse_gdf.iterrows():
+                if 'GH_LAYOUT' in row and row['GH_LAYOUT'] in ['S1']:
+                    continue
+                dist = pt.distance(row['geometry'])
+                landuse_distances.append({
+                    'row': row,
+                    'distance': dist
+                })
+            
+            # 按距离排序，取最近的两个地块
+            landuse_distances.sort(key=lambda x: x['distance'])
+            nearest_two = landuse_distances[:2]
+            
+            # 在最近的两个地块中判断左右
             left_row = None
             right_row = None
-            for _, row in landuse_gdf.iterrows():
-                if 'GH_LAYOUT' in row and row['GH_LAYOUT'] == 'S1':
-                    continue
-                centroid = (row['centroid_x'], row['centroid_y'])
-                side = judge_left_right((x, y), movedir, centroid)
-                dist = pt.distance(row['geometry'])
-                if side == 'L' and dist < left_min_dist:
-                    left_min_dist = dist
-                    left_row = row
-                elif side == 'R' and dist < right_min_dist:
-                    right_min_dist = dist
-                    right_row = row
+            
+            if len(nearest_two) >= 2:
+                # 对最近的两个地块进行左右判断
+                for item in nearest_two:
+                    row = item['row']
+                    centroid = (row['centroid_x'], row['centroid_y'])
+                    side = judge_left_right((x, y), heading, centroid)
+                    
+                    if side == 'L' and left_row is None:
+                        left_row = row
+                    elif side == 'R' and right_row is None:
+                        right_row = row
+                    elif side == 'L' and left_row is not None:
+                        # 如果左侧已有地块，选择距离更近的
+                        if item['distance'] < pt.distance(left_row['geometry']):
+                            right_row = left_row  # 原来的左侧地块变成右侧
+                            left_row = row
+                        else:
+                            right_row = row
+                    elif side == 'R' and right_row is not None:
+                        # 如果右侧已有地块，选择距离更近的
+                        if item['distance'] < pt.distance(right_row['geometry']):
+                            left_row = right_row  # 原来的右侧地块变成左侧
+                            right_row = row
+                        else:
+                            left_row = row
             if left_row is not None:
                 mapping.append({
                     'streetview_id': sid,
@@ -142,17 +236,54 @@ def main(
             df.to_csv(os.path.join(output_dir, 'streetview_landuse_mapping.csv'), index=False, encoding='utf-8')
             df.to_json(os.path.join(output_dir, 'streetview_landuse_mapping.json'), orient='records', force_ascii=False)
             print(f"[进度保存] 已保存 {len(mapping)} 条记录。")
-    print(f"Done! Mapping table saved to {output_dir}")
+    # 构建拓扑关系
+    if build_topology:
+        print("正在构建拓扑关系...")
+        
+        # 获取所有地块ID（排除S1地块）
+        filtered_landuse_gdf = landuse_gdf[~((landuse_gdf['GH_LAYOUT'] == 'S1') & (landuse_gdf['GH_LAYOUT'].notna()))]
+        landuse_ids = filtered_landuse_gdf[landuse_id_col].unique()
+        
+        # 为每个地块建立拓扑
+        topology_data = []
+        for landuse_id in tqdm(landuse_ids, desc='Building topology'):
+            try:
+                topology = build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, landuse_id_col)
+                if topology['road_sequence']:  # 只保存有关联道路的地块
+                    topology_data.append(topology)
+            except Exception as e:
+                print(f"Error building topology for landuse {landuse_id}: {e}")
+        
+        # 生成遍历配置表
+        print("正在生成遍历配置表...")
+        config_df = generate_traversal_config(topology_data, output_dir)
+        
+        # 建立多地块关联
+        print("正在建立多地块关联...")
+        multi_mapping_data = build_multi_landuse_mapping(streetview_road_mapping, landuse_gdf, landuse_id_col)
+        mapping_df = generate_multi_landuse_mapping(multi_mapping_data, output_dir)
+        
+        print(f"拓扑关系构建完成：")
+        print(f"- 遍历配置表：{len(config_df)} 条记录")
+        print(f"- 多地块关联表：{len(mapping_df)} 条记录")
+        
+        # 重命名图片文件以符合拓扑关系命名规则
+        print("正在重命名图片文件...")
+        rename_images_by_topology(config_df, img_dir)
+    
+    print(f"Done! All files saved to {output_dir}")
 
 if __name__ == '__main__':
     main(
-        landuse_gdb_path=r'矢量数据路径',
-        landuse_layer='landuse',#图层名称
-        landuse_id_col='landuse_id_col',#landuse_id_col为矢量数据中用于唯一标识每个地块的列名
-        streetview_csv_path='streetview_csv_path',#街景点csv文件路径
-        baidu_ak='百度ak',#百度ak
-        output_dir='output_dir',#输出目录
-        zoom=3,#街景图缩放级别
-        #save_front_back=True  # 如需保存前后方视图，取消注释
-        save_every=50  # 新增参数：每多少个点保存一次，断点续存时，每多少个点保存一次
+        landuse_gdb_path=r'D:/LifeOS/01Projects/GraduateThesis/250510 Test/卫星图测试/卫星图测试.gdb',
+        landuse_layer='landuse',
+        landuse_id_col='GH_ZXC_2_I',
+        road_layer='road_街景测试范围_0712',
+        road_id_col='OBJECTID',
+        streetview_csv_path='example4.csv',
+        baidu_ak='YOUR_API_KEY_HERE',
+        output_dir='output',
+        zoom=2,
+        save_every=50,
+        build_topology=True
     ) 
