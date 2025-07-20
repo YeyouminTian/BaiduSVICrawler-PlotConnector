@@ -330,11 +330,11 @@ if __name__ == '__main__':
         landuse_id_col='GH_ZXC_2_I',# 地块id列
         road_layer='road_街景测试范围_0712',# 道路图层
         road_id_col='OBJECTID',# 道路id列
-        streetview_csv_path='example3.csv',# 街景点csv文件
+        streetview_csv_path='example.csv',# 街景点csv文件
         baidu_ak='XXXXXXXX',# 百度地图API密钥
         output_dir='output',# 输出目录
-        zoom=2,
-        save_every=50,
-        build_topology=True,
+        zoom=2,# 街景缩放级别
+        save_every=50,# 保存间隔
+        build_topology=False,# 构建拓扑关系  
         traversal_direction='clockwise' # clockwise, counterclockwise
     ) 
