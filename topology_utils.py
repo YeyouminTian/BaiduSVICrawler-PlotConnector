@@ -28,10 +28,20 @@ def find_nearest_road(streetview_point, road_gdf, road_id_col='OBJECTID'):
     return nearest_road_id
 
 def calculate_angle(centroid, point):
-    """计算点相对于质心的角度"""
+    """计算点相对于质心的角度，以正北方向为0度，顺时针为正方向，返回[0, 2π]范围内的角度"""
     dx = point[0] - centroid[0]
     dy = point[1] - centroid[1]
-    return math.atan2(dy, dx)
+    
+    # 计算相对于正北方向的角度
+    # 正北方向为0度，顺时针为正方向
+    # 使用 atan2(dx, -dy) 来以正北方向为0度
+    angle = math.atan2(dx, -dy)
+    
+    # 将角度转换到[0, 2π]范围
+    if angle < 0:
+        angle += 2 * math.pi
+    
+    return angle
 
 def sort_roads_by_angle(landuse_centroid, road_centroids, clockwise=True):
     """按角度对道路排序"""
@@ -44,51 +54,45 @@ def sort_roads_by_angle(landuse_centroid, road_centroids, clockwise=True):
     road_angles.sort(key=lambda x: x[1], reverse=clockwise)
     return [road_id for road_id, _ in road_angles]
 
-def sort_streetview_in_road(road_id, streetview_points, clockwise=True):
-    """对单条道路内的街景点排序 - 使用沿着道路方向的线性排序"""
+def sort_streetview_in_road(road_id, streetview_points, clockwise=True, landuse_centroid=None):
+    """对单条道路内的街景点排序 - 使用相邻两点的相对角度排序"""
     if not streetview_points:
         return []
     
-    # 计算道路的方向向量
-    # 使用所有街景点的坐标来计算道路的主方向
-    x_coords = [pt['x'] for pt in streetview_points]
-    y_coords = [pt['y'] for pt in streetview_points]
-    
-    # 计算道路的主方向（使用PCA或简单的线性拟合）
-    # 这里使用简单的线性拟合方法
-    n = len(x_coords)
-    if n < 2:
-        return streetview_points
-    
-    # 计算道路的主方向向量
-    x_mean = np.mean(x_coords)
-    y_mean = np.mean(y_coords)
-    
-    # 计算协方差矩阵
-    cov_xx = np.sum((np.array(x_coords) - x_mean) ** 2)
-    cov_xy = np.sum((np.array(x_coords) - x_mean) * (np.array(y_coords) - y_mean))
-    cov_yy = np.sum((np.array(y_coords) - y_mean) ** 2)
-    
-    # 计算主方向角度
-    if cov_xx != cov_yy:
-        angle = 0.5 * np.arctan2(2 * cov_xy, cov_xx - cov_yy)
+    # 默认使用道路内街景点的质心，如果提供了地块质心则使用地块质心
+    if landuse_centroid is None:
+        centroid_x = np.mean([pt['x'] for pt in streetview_points])
+        centroid_y = np.mean([pt['y'] for pt in streetview_points])
+        centroid = (centroid_x, centroid_y)
     else:
-        angle = np.pi / 4  # 如果协方差相等，使用45度
+        centroid = landuse_centroid
     
-    # 计算每个点沿道路方向的投影
-    projections = []
+    # 计算每个街景点相对于质心的角度
+    angles = []
     for pt in streetview_points:
-        # 计算点相对于道路中心的偏移
-        dx = pt['x'] - x_mean
-        dy = pt['y'] - y_mean
-        
-        # 计算沿道路方向的投影
-        projection = dx * np.cos(angle) + dy * np.sin(angle)
-        projections.append((pt, projection))
+        angle = calculate_angle(centroid, (pt['x'], pt['y']))
+        angles.append((pt, angle))
     
-    # 按投影值排序
-    projections.sort(key=lambda x: x[1], reverse=not clockwise)
-    return [pt for pt, _ in projections]
+    # 按角度排序
+    angles.sort(key=lambda x: x[1], reverse=clockwise)
+    
+    # 使用相邻两点的相对角度来优化排序
+    # 如果相邻两点的角度差过大（跨越0度线），则调整顺序
+    sorted_points = [pt for pt, _ in angles]
+    
+    # 检查相邻点的角度差，如果超过π，说明跨越了0度线
+    for i in range(len(sorted_points) - 1):
+        angle1 = angles[i][1]
+        angle2 = angles[i + 1][1]
+        angle_diff = abs(angle2 - angle1)
+        
+        # 如果角度差超过π，说明跨越了0度线，需要调整
+        if angle_diff > math.pi:
+            # 将后面的点移到前面
+            sorted_points = sorted_points[i + 1:] + sorted_points[:i + 1]
+            break
+    
+    return sorted_points
 
 def build_streetview_road_mapping(streetview_points, road_gdf, road_id_col='OBJECTID'):
     """建立街景点-道路映射关系"""
@@ -157,8 +161,10 @@ def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, lan
     
     for road_seq, road_id in enumerate(road_sequence, 1):
         if road_id in road_groups:
-            # 对道路内的街景点排序
-            sorted_streetviews = sort_streetview_in_road(road_id, road_groups[road_id], clockwise=clockwise)
+            # 根据道路在地块中的位置调整街景点排序方向
+            # 对于地块的遍历，道路内的街景点也需要保持一致的遍历方向
+            # 使用地块质心进行排序，遵从traversal_direction参数
+            sorted_streetviews = sort_streetview_in_road(road_id, road_groups[road_id], clockwise=clockwise, landuse_centroid=landuse_centroid)
             
             road_topology = {
                 'road_id': road_id,
