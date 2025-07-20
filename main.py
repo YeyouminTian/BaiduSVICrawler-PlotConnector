@@ -53,6 +53,44 @@ def rename_images_by_topology(config_df, img_dir):
     
     print(f"重命名完成，共重命名 {renamed_count} 个文件")
 
+def update_streetview_mapping_filenames(mapping_df, config_df, output_dir):
+    """更新streetview_landuse_mapping.csv中的filename字段"""
+    print("开始更新streetview_landuse_mapping.csv中的filename字段...")
+    
+    # 创建一个字典，用于查找每个街景点在特定地块中的新文件名
+    filename_mapping = {}
+    for _, row in config_df.iterrows():
+        landuse_id = row['landuse_id']
+        road_id = row['road_id']
+        streetview_id = row['streetview_id']
+        
+        # 新文件名格式：P{landuse_id}_R{道路ID}_S{街景点ID}_{L/R}.jpg
+        new_filename_L = f"P{landuse_id}_R{road_id}_S{streetview_id}_L.jpg"
+        new_filename_R = f"P{landuse_id}_R{road_id}_S{streetview_id}_R.jpg"
+        
+        # 使用(landuse_id, streetview_id, side)作为键
+        filename_mapping[(landuse_id, streetview_id, 'L')] = new_filename_L
+        filename_mapping[(landuse_id, streetview_id, 'R')] = new_filename_R
+    
+    # 更新mapping_df中的filename字段
+    updated_count = 0
+    for idx, row in mapping_df.iterrows():
+        landuse_id = row['landuse_id']
+        streetview_id = row['streetview_id']
+        side = row['side']
+        
+        key = (landuse_id, streetview_id, side)
+        if key in filename_mapping:
+            mapping_df.at[idx, 'filename'] = filename_mapping[key]
+            updated_count += 1
+    
+    # 保存更新后的文件
+    mapping_csv = os.path.join(output_dir, 'streetview_landuse_mapping.csv')
+    mapping_df.to_csv(mapping_csv, index=False, encoding='utf-8')
+    mapping_df.to_json(os.path.join(output_dir, 'streetview_landuse_mapping.json'), orient='records', force_ascii=False)
+    
+    print(f"成功更新 {updated_count} 个文件名。")
+
 def main(
     landuse_gdb_path,
     landuse_layer='landuse',
@@ -65,7 +103,8 @@ def main(
     zoom=3,
     save_front_back=False,
     save_every=50,
-    build_topology=True
+    build_topology=True,
+    traversal_direction='clockwise'
 ):
     os.makedirs(output_dir, exist_ok=True)
     img_dir = os.path.join(output_dir, 'images')
@@ -240,6 +279,13 @@ def main(
     if build_topology:
         print("正在构建拓扑关系...")
         
+        # 读取当前的streetview_landuse_mapping.csv
+        mapping_csv = os.path.join(output_dir, 'streetview_landuse_mapping.csv')
+        if os.path.exists(mapping_csv):
+            streetview_landuse_mapping = pd.read_csv(mapping_csv)
+        else:
+            streetview_landuse_mapping = pd.DataFrame(mapping)
+        
         # 获取所有地块ID（排除S1地块）
         filtered_landuse_gdf = landuse_gdf[~((landuse_gdf['GH_LAYOUT'] == 'S1') & (landuse_gdf['GH_LAYOUT'].notna()))]
         landuse_ids = filtered_landuse_gdf[landuse_id_col].unique()
@@ -248,7 +294,7 @@ def main(
         topology_data = []
         for landuse_id in tqdm(landuse_ids, desc='Building topology'):
             try:
-                topology = build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, landuse_id_col)
+                topology = build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, landuse_id_col, streetview_landuse_mapping, traversal_direction=traversal_direction)
                 if topology['road_sequence']:  # 只保存有关联道路的地块
                     topology_data.append(topology)
             except Exception as e:
@@ -256,16 +302,20 @@ def main(
         
         # 生成遍历配置表
         print("正在生成遍历配置表...")
-        config_df = generate_traversal_config(topology_data, output_dir)
+        config_df = generate_traversal_config(topology_data, streetview_landuse_mapping, output_dir)
         
         # 建立多地块关联
         print("正在建立多地块关联...")
-        multi_mapping_data = build_multi_landuse_mapping(streetview_road_mapping, landuse_gdf, landuse_id_col)
+        multi_mapping_data = build_multi_landuse_mapping(streetview_road_mapping, landuse_gdf, landuse_id_col, streetview_landuse_mapping, traversal_direction)
         mapping_df = generate_multi_landuse_mapping(multi_mapping_data, output_dir)
         
         print(f"拓扑关系构建完成：")
         print(f"- 遍历配置表：{len(config_df)} 条记录")
         print(f"- 多地块关联表：{len(mapping_df)} 条记录")
+        
+        # 更新streetview_landuse_mapping.csv中的filename字段
+        print("正在更新streetview_landuse_mapping.csv中的filename字段...")
+        update_streetview_mapping_filenames(streetview_landuse_mapping, config_df, output_dir)
         
         # 重命名图片文件以符合拓扑关系命名规则
         print("正在重命名图片文件...")
@@ -275,15 +325,16 @@ def main(
 
 if __name__ == '__main__':
     main(
-        landuse_gdb_path=r'D:/LifeOS/01Projects/GraduateThesis/250510 Test/卫星图测试/卫星图测试.gdb',
-        landuse_layer='landuse',
-        landuse_id_col='GH_ZXC_2_I',
-        road_layer='road_街景测试范围_0712',
-        road_id_col='OBJECTID',
-        streetview_csv_path='example4.csv',
-        baidu_ak='YOUR_API_KEY_HERE',
-        output_dir='output',
+        landuse_gdb_path=r'D:/卫星图测试.gdb',# 地块gdb文件
+        landuse_layer='landuse',# 地块图层
+        landuse_id_col='GH_ZXC_2_I',# 地块id列
+        road_layer='road_街景测试范围_0712',# 道路图层
+        road_id_col='OBJECTID',# 道路id列
+        streetview_csv_path='example3.csv',# 街景点csv文件
+        baidu_ak='XXXXXXXX',# 百度地图API密钥
+        output_dir='output',# 输出目录
         zoom=2,
         save_every=50,
-        build_topology=True
+        build_topology=True,
+        traversal_direction='clockwise' # clockwise, counterclockwise
     ) 
