@@ -20,21 +20,46 @@ def rename_images_by_topology(config_df, img_dir):
     # 创建旧文件名到新文件名的映射
     rename_mapping = {}
     
+    # 按街景点ID分组，确保左右图对应正确的地块
+    streetview_groups = {}
     for _, row in config_df.iterrows():
+        streetview_id = str(row['streetview_id'])  # 转换为字符串确保类型一致
         landuse_id = row['landuse_id']
         road_id = row['road_id']
-        streetview_id = row['streetview_id']
+        filename = row['filename']
         
-        # 新文件名格式：P{landuse_id}_R{道路ID}_S{街景点ID}_{L/R}.jpg
-        new_filename_L = f"P{landuse_id}_R{road_id}_S{streetview_id}_L.jpg"
-        new_filename_R = f"P{landuse_id}_R{road_id}_S{streetview_id}_R.jpg"
+        if streetview_id not in streetview_groups:
+            streetview_groups[streetview_id] = {}
         
+        # 根据文件名中的L/R判断左右
+        if '_L.jpg' in filename:
+            streetview_groups[streetview_id]['left'] = {
+                'landuse_id': landuse_id,
+                'road_id': road_id,
+                'filename': filename
+            }
+        elif '_R.jpg' in filename:
+            streetview_groups[streetview_id]['right'] = {
+                'landuse_id': landuse_id,
+                'road_id': road_id,
+                'filename': filename
+            }
+    
+    # 为每个街景点创建正确的重命名映射
+    for streetview_id, sides in streetview_groups.items():
         # 旧文件名格式：{streetview_id}_L.jpg, {streetview_id}_R.jpg
         old_filename_L = f"{streetview_id}_L.jpg"
         old_filename_R = f"{streetview_id}_R.jpg"
         
-        rename_mapping[old_filename_L] = new_filename_L
-        rename_mapping[old_filename_R] = new_filename_R
+        # 左图重命名
+        if 'left' in sides:
+            new_filename_L = sides['left']['filename']
+            rename_mapping[old_filename_L] = new_filename_L
+        
+        # 右图重命名
+        if 'right' in sides:
+            new_filename_R = sides['right']['filename']
+            rename_mapping[old_filename_R] = new_filename_R
     
     # 执行重命名
     renamed_count = 0
@@ -44,8 +69,15 @@ def rename_images_by_topology(config_df, img_dir):
         
         if os.path.exists(old_path):
             try:
+                # 如果新文件名已存在，先删除
+                if os.path.exists(new_path):
+                    os.remove(new_path)
+                    print(f"删除已存在的文件: {new_name}")
+                
+                # 重命名文件
                 os.rename(old_path, new_path)
                 renamed_count += 1
+                print(f"重命名成功: {old_name} -> {new_name}")
             except Exception as e:
                 print(f"重命名失败 {old_name} -> {new_name}: {e}")
         else:
@@ -61,22 +93,25 @@ def update_streetview_mapping_filenames(mapping_df, config_df, output_dir):
     filename_mapping = {}
     for _, row in config_df.iterrows():
         landuse_id = row['landuse_id']
-        road_id = row['road_id']
-        streetview_id = row['streetview_id']
+        streetview_id = str(row['streetview_id'])  # 转换为字符串确保类型一致
+        filename = row['filename']
         
-        # 新文件名格式：P{landuse_id}_R{道路ID}_S{街景点ID}_{L/R}.jpg
-        new_filename_L = f"P{landuse_id}_R{road_id}_S{streetview_id}_L.jpg"
-        new_filename_R = f"P{landuse_id}_R{road_id}_S{streetview_id}_R.jpg"
+        # 根据文件名中的L/R判断左右
+        if '_L.jpg' in filename:
+            side = 'L'
+        elif '_R.jpg' in filename:
+            side = 'R'
+        else:
+            continue  # 跳过不符合命名规则的文件
         
         # 使用(landuse_id, streetview_id, side)作为键
-        filename_mapping[(landuse_id, streetview_id, 'L')] = new_filename_L
-        filename_mapping[(landuse_id, streetview_id, 'R')] = new_filename_R
+        filename_mapping[(landuse_id, streetview_id, side)] = filename
     
     # 更新mapping_df中的filename字段
     updated_count = 0
     for idx, row in mapping_df.iterrows():
         landuse_id = row['landuse_id']
-        streetview_id = row['streetview_id']
+        streetview_id = str(row['streetview_id'])  # 转换为字符串确保类型一致
         side = row['side']
         
         key = (landuse_id, streetview_id, side)
