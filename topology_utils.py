@@ -1,337 +1,250 @@
+"""
+拓扑关系处理模块
+"""
+import os
+import math
 import pandas as pd
 import geopandas as gpd
 import numpy as np
-from shapely.geometry import Point
-import math
-import os
 from collections import defaultdict
+from shapely.geometry import Point
 
-def read_road_gdb(gdb_path, road_layer='road_街景测试范围_0712', road_id_col='OBJECTID'):
-    """读取道路数据"""
+
+def read_road_gdb(gdb_path, road_layer='road', road_id_col='OBJECTID'):
+    """
+    读取道路数据
+
+    Args:
+        gdb_path: GDB文件路径
+        road_layer: 道路图层名
+        road_id_col: 道路ID字段名
+
+    Returns:
+        GeoDataFrame
+    """
+    print(f"正在读取道路图层: {road_layer} ...")
     gdf = gpd.read_file(gdb_path, layer=road_layer)
     if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
         gdf = gdf.to_crs(epsg=4326)
+    elif gdf.crs is None:
+        gdf = gdf.set_crs(epsg=4326)
     return gdf
 
-def find_nearest_road(streetview_point, road_gdf, road_id_col='OBJECTID'):
-    """为街景点找到最近的道路"""
-    point = Point(streetview_point[0], streetview_point[1])
-    min_distance = float('inf')
-    nearest_road_id = None
-    
-    for _, road_row in road_gdf.iterrows():
-        distance = point.distance(road_row.geometry)
-        if distance < min_distance:
-            min_distance = distance
-            nearest_road_id = road_row[road_id_col]
-    
-    return nearest_road_id
 
-def calculate_angle(centroid, point):
-    """计算点相对于质心的角度，以正北方向为0度，顺时针为正方向，返回[0, 2π]范围内的角度"""
-    dx = point[0] - centroid[0]
-    dy = point[1] - centroid[1]
-    
-    # 计算相对于正北方向的角度
-    # 正北方向为0度，顺时针为正方向
-    # 使用 atan2(dx, -dy) 来以正北方向为0度
-    angle = math.atan2(dx, -dy)
-    
-    # 将角度转换到[0, 2π]范围
+def calculate_angle(origin, point):
+    """
+    计算点相对于原点的角度
+
+    Args:
+        origin: 原点坐标 (x, y)
+        point: 目标点坐标 (x, y)
+
+    Returns:
+        角度（0-2π，正北为0，顺时针）
+    """
+    dx = point[0] - origin[0]
+    dy = point[1] - origin[1]
+    angle = math.atan2(dx, dy)
     if angle < 0:
         angle += 2 * math.pi
-    
     return angle
 
-def sort_roads_by_angle(landuse_centroid, road_centroids, clockwise=True):
-    """按角度对道路排序"""
-    road_angles = []
-    for road_id, centroid in road_centroids.items():
-        angle = calculate_angle(landuse_centroid, centroid)
-        road_angles.append((road_id, angle))
-    
-    # 按角度排序
-    road_angles.sort(key=lambda x: x[1], reverse=clockwise)
-    return [road_id for road_id, _ in road_angles]
 
-def sort_streetview_in_road(road_id, streetview_points, clockwise=True, landuse_centroid=None):
-    """对单条道路内的街景点排序 - 使用相邻两点的相对角度排序"""
-    if not streetview_points:
-        return []
-    
-    # 默认使用道路内街景点的质心，如果提供了地块质心则使用地块质心
-    if landuse_centroid is None:
-        centroid_x = np.mean([pt['x'] for pt in streetview_points])
-        centroid_y = np.mean([pt['y'] for pt in streetview_points])
-        centroid = (centroid_x, centroid_y)
-    else:
-        centroid = landuse_centroid
-    
-    # 计算每个街景点相对于质心的角度
-    angles = []
-    for pt in streetview_points:
-        angle = calculate_angle(centroid, (pt['x'], pt['y']))
-        angles.append((pt, angle))
-    
-    # 按角度排序
-    angles.sort(key=lambda x: x[1], reverse=clockwise)
-    
-    # 使用相邻两点的相对角度来优化排序
-    # 如果相邻两点的角度差过大（跨越0度线），则调整顺序
-    sorted_points = [pt for pt, _ in angles]
-    
-    # 检查相邻点的角度差，如果超过π，说明跨越了0度线
-    for i in range(len(sorted_points) - 1):
-        angle1 = angles[i][1]
-        angle2 = angles[i + 1][1]
-        angle_diff = abs(angle2 - angle1)
-        
-        # 如果角度差超过π，说明跨越了0度线，需要调整
-        if angle_diff > math.pi:
-            # 将后面的点移到前面
-            sorted_points = sorted_points[i + 1:] + sorted_points[:i + 1]
-            break
-    
-    return sorted_points
+def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, landuse_id_col,
+                           streetview_landuse_mapping, traversal_direction='clockwise'):
+    """
+    为单个地块建立道路和街景点的拓扑顺序
 
-def build_streetview_road_mapping(streetview_points, road_gdf, road_id_col='OBJECTID'):
-    """建立街景点-道路映射关系"""
-    mapping = []
-    
-    for pt_info in streetview_points:
-        if len(pt_info) == 3:
-            id_val, x, y = pt_info
-        else:
-            id_val = None
-            x, y = pt_info
-        
-        road_id = find_nearest_road((x, y), road_gdf, road_id_col)
-        
-        mapping.append({
-            'streetview_id': str(id_val) if id_val is not None else f"SV_{x}_{y}",
-            'x': x,
-            'y': y,
-            'road_id': road_id,
-            'original_id': id_val
-        })
-    
-    return mapping
+    Args:
+        landuse_id: 地块ID
+        streetview_road_mapping: 街景点-道路映射列表
+        landuse_gdf: 地块GeoDataFrame
+        landuse_id_col: 地块ID列名
+        streetview_landuse_mapping: 街景点-地块映射DataFrame
+        traversal_direction: 遍历方向 ('clockwise' 或 'counterclockwise')
 
-def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, landuse_id_col, streetview_landuse_mapping, traversal_direction='clockwise'):
-    """为单个地块建立道路和街景点的拓扑顺序"""
-    # 获取地块信息
-    landuse_row = landuse_gdf[landuse_gdf[landuse_id_col] == landuse_id].iloc[0]
+    Returns:
+        拓扑字典或None
+    """
+    try:
+        landuse_row = landuse_gdf[landuse_gdf[landuse_id_col] == landuse_id].iloc[0]
+    except IndexError:
+        return None
+
     landuse_centroid = (landuse_row['centroid_x'], landuse_row['centroid_y'])
-    
-    # 从streetview_landuse_mapping中获取该地块关联的街景点
-    landuse_streetviews = []
-    for _, row in streetview_landuse_mapping.iterrows():
-        if row['landuse_id'] == landuse_id:
-            original_id = row['id']
-            # 在streetview_road_mapping中找到对应的街景点
-            for sv_mapping in streetview_road_mapping:
-                if sv_mapping.get('original_id') == original_id:
-                    landuse_streetviews.append(sv_mapping)
-                    break
-    
-    # 按道路分组
+
+    # 筛选关联的街景点
+    related_records = streetview_landuse_mapping[streetview_landuse_mapping['landuse_id'] == landuse_id]
+    related_sv_ids = related_records['id'].unique()
+
+    # 将街景点按道路归类
     road_groups = defaultdict(list)
-    for sv in landuse_streetviews:
-        road_groups[sv['road_id']].append(sv)
-    
-    # 计算每条道路的质心
+    sv_lookup = {item['original_id']: item for item in streetview_road_mapping}
+
+    # 同时尝试字符串和数字类型的匹配
+    sv_lookup_str = {str(k): v for k, v in sv_lookup.items()}
+
+    for sv_id in related_sv_ids:
+        sv_info = None
+        # 尝试原始类型匹配
+        if sv_id in sv_lookup:
+            sv_info = sv_lookup[sv_id]
+        # 尝试字符串匹配
+        elif str(sv_id) in sv_lookup_str:
+            sv_info = sv_lookup_str[str(sv_id)]
+        # 尝试数字匹配
+        elif isinstance(sv_id, str) and sv_id.isdigit():
+            if int(sv_id) in sv_lookup:
+                sv_info = sv_lookup[int(sv_id)]
+
+        if sv_info and sv_info['road_id'] is not None:
+            road_groups[sv_info['road_id']].append(sv_info)
+
+    if not road_groups:
+        return None
+
+    # 道路排序：计算每条道路的质心，然后按角度排序
     road_centroids = {}
-    for road_id, sv_list in road_groups.items():
-        if sv_list:
-            centroid_x = np.mean([sv['x'] for sv in sv_list])
-            centroid_y = np.mean([sv['y'] for sv in sv_list])
-            road_centroids[road_id] = (centroid_x, centroid_y)
-    
-    # 确定遍历方向
-    clockwise = (traversal_direction.lower() == 'clockwise')
-    
-    # 按角度对道路排序
-    road_sequence = sort_roads_by_angle(landuse_centroid, road_centroids, clockwise=clockwise)
-    
-    # 构建拓扑结构
+    for rid, points in road_groups.items():
+        cx = np.mean([p['x'] for p in points])
+        cy = np.mean([p['y'] for p in points])
+        road_centroids[rid] = (cx, cy)
+
+    road_angles = []
+    for rid, rc in road_centroids.items():
+        ang = calculate_angle(landuse_centroid, rc)
+        road_angles.append((rid, ang))
+
+    is_clockwise = (traversal_direction == 'clockwise')
+    road_angles.sort(key=lambda x: x[1], reverse=not is_clockwise)
+
     topology = {
         'landuse_id': landuse_id,
         'road_sequence': []
     }
-    
-    for road_seq, road_id in enumerate(road_sequence, 1):
-        if road_id in road_groups:
-            # 根据道路在地块中的位置调整街景点排序方向
-            # 对于地块的遍历，道路内的街景点也需要保持一致的遍历方向
-            # 使用地块质心进行排序，遵从traversal_direction参数
-            sorted_streetviews = sort_streetview_in_road(road_id, road_groups[road_id], clockwise=clockwise, landuse_centroid=landuse_centroid)
-            
-            road_topology = {
-                'road_id': road_id,
-                'sequence': road_seq,
-                'streetview_points': []
-            }
-            
-            for pt_seq, sv in enumerate(sorted_streetviews, 1):
-                road_topology['streetview_points'].append({
-                    'streetview_id': sv['streetview_id'],
-                    'sequence': pt_seq,
-                    'x': sv['x'],
-                    'y': sv['y']
-                })
-            
-            topology['road_sequence'].append(road_topology)
-    
+
+    # 对每条道路内的街景点排序
+    for seq_idx, (road_id, _) in enumerate(road_angles, 1):
+        points = road_groups[road_id]
+        points_with_angle = []
+        for p in points:
+            ang = calculate_angle(landuse_centroid, (p['x'], p['y']))
+            points_with_angle.append((p, ang))
+
+        points_with_angle.sort(key=lambda x: x[1], reverse=not is_clockwise)
+        sorted_points = [p[0] for p in points_with_angle]
+
+        road_topo = {
+            'road_id': road_id,
+            'sequence': seq_idx,
+            'streetview_points': []
+        }
+
+        for pt_seq, sv in enumerate(sorted_points, 1):
+            road_topo['streetview_points'].append({
+                'streetview_id': sv['original_id'],
+                'sequence': pt_seq,
+                'x': sv['x'],
+                'y': sv['y']
+            })
+
+        topology['road_sequence'].append(road_topo)
+
     return topology
 
-def build_multi_landuse_mapping(streetview_road_mapping, landuse_gdf, landuse_id_col, streetview_landuse_mapping, traversal_direction='clockwise'):
-    """建立街景点在多地块中的位置关系 - 只对应左右视图的两个地块"""
-    multi_mapping = []
-    
-    # 从streetview_landuse_mapping中获取每个街景点的左右地块映射
-    sv_landuse_map = {}
-    for _, row in streetview_landuse_mapping.iterrows():
-        sv_id = row['streetview_id']
-        landuse_id = row['landuse_id']
-        side = row['side']
-        original_id = row['id']  # 使用原始ID进行匹配
-        
-        if original_id not in sv_landuse_map:
-            sv_landuse_map[original_id] = {}
-        
-        if side == 'L':
-            sv_landuse_map[original_id]['left'] = landuse_id
-        elif side == 'R':
-            sv_landuse_map[original_id]['right'] = landuse_id
-    
-    for sv_mapping in streetview_road_mapping:
-        sv_id = sv_mapping['streetview_id']
-        original_id = sv_mapping.get('original_id')
-        x, y = sv_mapping['x'], sv_mapping['y']
-        road_id = sv_mapping['road_id']
-        
-        # 使用original_id进行匹配
-        if original_id is None or original_id not in sv_landuse_map:
-            continue
-        
-        # 获取该街景点的左右地块
-        left_landuse_id = sv_landuse_map[original_id].get('left')
-        right_landuse_id = sv_landuse_map[original_id].get('right')
-        
-        landuse_relations = []
-        
-        # 只为左右视图对应的地块建立拓扑关系
-        for landuse_id in [left_landuse_id, right_landuse_id]:
-            if landuse_id is None:
-                continue
-                
-            # 为每个地块建立拓扑
-            topology = build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, landuse_id_col, streetview_landuse_mapping, traversal_direction)
-            
-            # 找到该街景点在该地块中的位置
-            for road_info in topology['road_sequence']:
-                if road_info['road_id'] == road_id:
-                    for pt_info in road_info['streetview_points']:
-                        if pt_info['streetview_id'] == sv_id:
-                            landuse_relations.append({
-                                'landuse_id': landuse_id,
-                                'road_id': road_id,
-                                'road_sequence': road_info['sequence'],
-                                'point_sequence': pt_info['sequence']
-                            })
-                            break
-        
-        if landuse_relations:
-            multi_mapping.append({
-                'streetview_id': sv_id,
-                'landuse_relations': landuse_relations
-            })
-    
-    return multi_mapping
 
-def generate_traversal_config(topology_data, streetview_landuse_mapping, output_dir):
-    """生成地块遍历配置表 - 只包含与streetview_landuse_mapping.csv一致的地块关联"""
-    config_data = []
-    
-    # 创建街景点到地块的映射
-    sv_landuse_map = {}
-    for _, row in streetview_landuse_mapping.iterrows():
-        original_id = row['id']
-        landuse_id = row['landuse_id']
-        side = row['side']
-        
-        if original_id not in sv_landuse_map:
-            sv_landuse_map[original_id] = {}
-        
-        if side == 'L':
-            sv_landuse_map[original_id]['left'] = landuse_id
-        elif side == 'R':
-            sv_landuse_map[original_id]['right'] = landuse_id
-    
-    # 只处理在streetview_landuse_mapping中有记录的街景点
-    for _, row in streetview_landuse_mapping.iterrows():
-        original_id = row['id']
-        landuse_id = row['landuse_id']
-        side = row['side']
-        
-        # 找到该街景点在拓扑数据中的位置
-        for landuse_topology in topology_data:
-            if landuse_topology['landuse_id'] == landuse_id:
-                for road_info in landuse_topology['road_sequence']:
-                    road_id = road_info['road_id']
-                    
-                    for pt_info in road_info['streetview_points']:
-                        # 检查是否是同一个街景点
-                        if str(pt_info['streetview_id']) == str(original_id):
-                            # 直接使用拓扑数据中的序号
-                            road_sequence = road_info['sequence']
-                            streetview_sequence = pt_info['sequence']
-                            
-                            # 确定文件名
-                            if side == 'L':
-                                filename = f"P{landuse_id}_R{road_id}_S{original_id}_L.jpg"
-                            else:
-                                filename = f"P{landuse_id}_R{road_id}_S{original_id}_R.jpg"
-                            
-                            config_data.append({
-                                'landuse_id': landuse_id,
-                                'road_id': road_id,
-                                'road_sequence': road_sequence,
-                                'streetview_id': original_id,
-                                'streetview_sequence': streetview_sequence,
-                                'filename': filename
-                            })
-                            break
-    
-    # 按照landuse_id, road_sequence, streetview_sequence排序
-    config_data.sort(key=lambda x: (x['landuse_id'], x['road_sequence'], x['streetview_sequence']))
-    
-    # 保存配置表
-    config_df = pd.DataFrame(config_data)
-    config_df.to_csv(os.path.join(output_dir, 'landuse_traversal_config.csv'), 
-                     index=False, encoding='utf-8')
-    
-    return config_df
+def generate_final_config(topology_list, mapping_df, output_dir):
+    """
+    生成最终的遍历配置表
 
-def generate_multi_landuse_mapping(multi_mapping_data, output_dir):
-    """生成街景点多地块关联表"""
-    mapping_data = []
-    
-    for sv_mapping in multi_mapping_data:
-        sv_id = sv_mapping['streetview_id']
-        
-        for relation in sv_mapping['landuse_relations']:
-            mapping_data.append({
-                'streetview_id': sv_id,
-                'landuse_id': relation['landuse_id'],
-                'road_id': relation['road_id'],
-                'road_sequence': relation['road_sequence'],
-                'point_sequence': relation['point_sequence']
-            })
-    
-    # 保存关联表
-    mapping_df = pd.DataFrame(mapping_data)
-    mapping_df.to_csv(os.path.join(output_dir, 'streetview_multi_landuse_mapping.csv'), 
-                      index=False, encoding='utf-8')
-    
-    return mapping_df 
+    Args:
+        topology_list: 拓扑结构列表
+        mapping_df: 街景点-地块映射DataFrame
+        output_dir: 输出目录
+
+    Returns:
+        配置表DataFrame
+    """
+    config_rows = []
+
+    # 建立mapping的快速查找
+    mapping_dict = {}
+    for _, row in mapping_df.iterrows():
+        key = (str(row['id']), row['landuse_id'])
+        mapping_dict[key] = row['side']
+
+    for topo in topology_list:
+        lid = topo['landuse_id']
+        for road in topo['road_sequence']:
+            rid = road['road_id']
+            r_seq = road['sequence']
+            for pt in road['streetview_points']:
+                sid = str(pt['streetview_id'])
+                pt_seq = pt['sequence']
+
+                side = mapping_dict.get((sid, lid))
+                if not side:
+                    continue
+
+                new_filename = f"P{lid}_R{rid}_S{sid}_{side}.jpg"
+
+                config_rows.append({
+                    'landuse_id': lid,
+                    'road_id': rid,
+                    'road_sequence': r_seq,
+                    'streetview_id': sid,
+                    'streetview_sequence': pt_seq,
+                    'side': side,
+                    'filename': new_filename
+                })
+
+    df = pd.DataFrame(config_rows)
+    df.to_csv(os.path.join(output_dir, 'landuse_traversal_config.csv'), index=False, encoding='utf-8')
+    return df
+
+
+def execute_rename(config_df, img_dir):
+    """
+    根据配置表重命名图片
+
+    Args:
+        config_df: 配置表DataFrame
+        img_dir: 图片目录
+    """
+    from tqdm import tqdm
+
+    print("开始重命名图片...")
+
+    if not os.path.exists(img_dir):
+        print(f"图片目录不存在: {img_dir}")
+        return
+
+    current_files = set(os.listdir(img_dir))
+
+    count = 0
+    skipped = 0
+
+    for _, row in tqdm(config_df.iterrows(), total=len(config_df), desc="重命名"):
+        sid = str(row['streetview_id'])
+        side = row['side']
+        target_name = row['filename']
+
+        src_name = f"{sid}_{side}.jpg"
+
+        src_path = os.path.join(img_dir, src_name)
+        target_path = os.path.join(img_dir, target_name)
+
+        if src_name in current_files and src_name != target_name:
+            try:
+                if os.path.exists(target_path):
+                    os.remove(target_path)
+                os.rename(src_path, target_path)
+                current_files.discard(src_name)
+                current_files.add(target_name)
+                count += 1
+            except Exception as e:
+                print(f"重命名失败 {src_name}: {e}")
+        elif target_name in current_files:
+            skipped += 1
+
+    print(f"重命名完成: 成功 {count} 个, 跳过 {skipped} 个")

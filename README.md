@@ -53,17 +53,28 @@ pip install -r requirements.txt
 
 ## 三、文件结构说明
 
+### 模块化架构
+
 ```
 项目目录/
 │
-├─ main.py                           # 主程序入口
+├─ main.py                           # 模块化主程序 ⭐推荐使用
+├─ main_merged.py                    # 单文件版本（保留作参考）
+│
+├─ geometry_utils.py                 # 几何与投影工具
 ├─ landuse_utils.py                  # 地块数据读取模块
 ├─ streetview_utils.py               # 街景API与点读取模块
 ├─ image_utils.py                    # 图像处理模块
-├─ spatial_analysis.py               # 空间分析与左右判别模块
+├─ spatial_analysis.py               # 空间分析与左右判别模块（局部切线法）
 ├─ topology_utils.py                 # 拓扑关系处理模块
+│
+├─ remap_new_landuse.py              # 地块更新后的重新映射工具
+│
 ├─ example.csv                       # 示例街景点数据
 ├─ requirements.txt                  # 依赖包列表
+├─ README.md                         # 项目文档
+├─ CLAUDE.md                         # Claude Code 开发指南
+│
 └─ output/                           # 输出目录（自动生成）
     ├─ images/                       # 街景图像
     ├─ streetview_landuse_mapping.csv    # 基础关联表
@@ -71,18 +82,54 @@ pip install -r requirements.txt
     └─ streetview_multi_landuse_mapping.csv  # 多地块关联表
 ```
 
+### 模块职责
+
+- **geometry_utils.py**: UTM投影计算与坐标转换
+- **landuse_utils.py**: 读取GDB地块数据，计算质心
+- **streetview_utils.py**: 百度API调用、坐标转换、街景下载
+- **image_utils.py**: 全景图透视展开
+- **spatial_analysis.py**: 空间关联算法（局部切线法 + 纯Heading法）
+- **topology_utils.py**: 拓扑关系构建、排序与图像重命名
+
 ---
 
 ## 四、核心算法原理
 
 ### 1. 空间左右判别算法
 
-#### 1.1 基于叉积的左右判别
+#### 1.1 局部切线法（Local Tangent Method）⭐推荐
+
+**适用场景**：弯道、复杂道路几何、高精度需求
+
+**算法原理**：
+```python
+def determine_side_robust(pt_proj, heading, road_gdf, road_sindex, candidates):
+    """
+    基于道路几何的局部切线方向进行左右判断
+
+    算法步骤：
+    1. 找到街景点最近的道路
+    2. 判断道路几何方向与车行方向的关系（同向/反向）
+    3. 将地块质心投影到道路上，获取投影位置
+    4. 在投影位置获取道路的局部切线向量
+    5. 计算切线向量与地块向量的叉积，判断左右
+    """
+```
+
+**优势**：
+- 解决弯道问题：每个位置使用局部方向而非全局方向
+- 零距离稳健：使用投影点而非街景点本身
+- 自动方向修正：检测道路几何方向并自动修正
+
+#### 1.2 纯Heading法（通用方法）
+
+**适用场景**：直线道路、无道路几何数据、快速处理
+
 ```python
 def judge_left_right(streetview_pt, road_dir, landuse_centroid):
     """
     使用叉积判断地块相对于街景点的左右位置
-    
+
     算法原理：
     1. 计算道路方向向量（基于街景拍摄方向）
     2. 计算地块质心到街景点的向量
@@ -95,7 +142,17 @@ def judge_left_right(streetview_pt, road_dir, landuse_centroid):
 - 道路方向向量：`road_vec = [cos(θ), sin(θ)]`
 - 地块向量：`landuse_vec = [dx, dy]`
 - 叉积：`cross = landuse_vec[0] * road_vec[1] - landuse_vec[1] * road_vec[0]`
-- 判断：`cross < 0` 为左侧，`cross > 0` 为右侧
+- 判断：`cross > 0` 为左侧，`cross < 0` 为右侧
+
+#### 1.3 算法选择
+
+在 `main.py` 中通过参数控制：
+```python
+main(
+    use_local_tangent=True,  # True=局部切线法，False=纯Heading法
+    ...
+)
+```
 
 #### 1.2 多地块关联策略
 - **最近邻搜索**：找到距离街景点最近的两个地块
@@ -256,13 +313,37 @@ if __name__ == '__main__':
 python main.py
 ```
 
-**注意**：修复后的代码现在可以直接生成正确的图像命名，无需额外处理。
+**推荐使用模块化版本**，功能与 `main_merged.py` 完全一致，但代码结构更清晰，易于维护。
 
 ### 3. 查看输出结果
 - **街景图像**：`output/images/` 文件夹
 - **基础关联表**：`output/streetview_landuse_mapping.csv`
 - **遍历配置表**：`output/landuse_traversal_config.csv`
 - **多地块关联表**：`output/streetview_multi_landuse_mapping.csv`
+
+### 4. 地块数据更新后的重新映射
+
+当你的地块数据发生更新（边界调整、ID变更等），无需重新爬取街景图像：
+
+```bash
+python remap_new_landuse.py
+```
+
+**修改配置**：
+```python
+main(
+    new_landuse_path='新地块.gdb',      # 新地块数据
+    new_landuse_layer='new_blocks',
+    old_output_dir='svi_251206',        # 旧输出目录
+    new_output_dir='svi_251207',        # 新输出目录
+    use_local_tangent=True
+)
+```
+
+**优势**：
+- 复用已有街景图像，节省时间
+- 使用相同的匹配算法，保证一致性
+- 自动生成新的拓扑关系和配置表
 
 ---
 
