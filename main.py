@@ -40,8 +40,12 @@ def main(
     block_id_col,
     road_layer,
     road_id_col,
-    streetview_csv_path,
     baidu_ak,
+
+    # 街景点输入（两种方式二选一）
+    streetview_csv_path=None,     # 方式1: CSV文件路径
+    streetview_gdb_layer=None,    # 方式2: GDB图层名（与block_gdb_path同一个GDB）
+    streetview_id_col='Svi_ID',   # 街景点ID字段名（GDB方式）
 
     # 输出配置
     output_dir='output',
@@ -71,8 +75,10 @@ def main(
         block_id_col: 街坊/地块ID字段名
         road_layer: 道路图层名
         road_id_col: 道路ID字段名
-        streetview_csv_path: 街景点CSV文件路径
         baidu_ak: 百度地图API密钥
+        streetview_csv_path: 街景点CSV文件路径（与streetview_gdb_layer二选一）
+        streetview_gdb_layer: 街景点GDB图层名（与streetview_csv_path二选一）
+        streetview_id_col: 街景点ID字段名（GDB方式）
         output_dir: 输出目录
         zoom: 街景缩放级别（1-4）
         save_every: 保存间隔
@@ -111,9 +117,17 @@ def main(
     road_gdf = read_road_gdb(block_gdb_path, road_layer, road_id_col)
     print(f"读取道路 {len(road_gdf)} 条")
 
-    # 读取街景点
-    sv_points = read_streetview_points(streetview_csv_path)
-    print(f"读取街景点 {len(sv_points)} 个")
+    # 读取街景点（支持CSV或GDB）
+    if streetview_csv_path:
+        sv_points = read_streetview_points(csv_path=streetview_csv_path)
+    elif streetview_gdb_layer:
+        sv_points = read_streetview_points(
+            gdb_path=block_gdb_path,
+            layer_name=streetview_gdb_layer,
+            id_col=streetview_id_col
+        )
+    else:
+        raise ValueError("必须提供 streetview_csv_path 或 streetview_gdb_layer")
 
     # 断点续传
     processed_ids = set()
@@ -585,21 +599,23 @@ if __name__ == '__main__':
         print(e)
         exit(1)
 
+    # 使用example.gdb进行测试
     main(
-        block_gdb_path=r'D:\LifeOS\01Projects\GraduateThesis\251118街景+虹口测试\hongkou_test\hongkou_test.gdb',
-        block_layer='blocks251206',
+        block_gdb_path='example.gdb',
+        block_layer='block',
         block_id_col='Block_ID',
-        road_layer='road_hongkou_251206',
-        road_id_col='ID',
-        streetview_csv_path=r'D:\LifeOS\01Projects\GraduateThesis\251118街景+虹口测试\251216 测试\251206svi.csv',
+        road_layer='road',
+        road_id_col='Road_ID',
+        streetview_gdb_layer='svi_point',      # 使用GDB图层
+        streetview_id_col='Svi_ID',            # 街景点ID字段
         baidu_ak=baidu_ak,
-        output_dir='svi_251206',
+        output_dir='output_test',
         zoom=3,
-        save_every=50,
+        save_every=10,
         build_topology=True,
         traversal_direction='clockwise',
-        view_mode='all',  # 'block_only', 'street_only', 'all'
-        test_limit=None,
+        view_mode='all',
+        test_limit=5,  # 测试模式：只处理前5个点
         distance_threshold=100,
         search_buffer=500,
         use_local_tangent=True,

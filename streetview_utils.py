@@ -3,52 +3,92 @@
 """
 import time
 import pandas as pd
+import geopandas as gpd
 import requests
 import json
 from PIL import Image
 from io import BytesIO
 
 
-def read_streetview_points(csv_path):
+def read_streetview_points(csv_path=None, gdb_path=None, layer_name=None, id_col='Svi_ID'):
     """
-    读取街景点CSV文件
+    读取街景点数据（支持CSV或GDB格式）
 
     Args:
-        csv_path: CSV文件路径
+        csv_path: CSV文件路径（可选）
+        gdb_path: GDB文件路径（可选）
+        layer_name: GDB图层名（读取GDB时必需）
+        id_col: ID字段名（读取GDB时使用）
 
     Returns:
         列表，每个元素为 [id, x, y] 或 [x, y]
     """
-    df = pd.read_csv(csv_path)
+    # 从GDB读取
+    if gdb_path and layer_name:
+        print(f"正在读取街景点图层: {layer_name} ...")
+        gdf = gpd.read_file(gdb_path, layer=layer_name)
 
-    points = []
-    id_col = None
-    x_col = None
-    y_col = None
+        # 转换为WGS84
+        if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs(epsg=4326)
+        elif gdf.crs is None:
+            gdf = gdf.set_crs(epsg=4326)
 
-    # 自动识别列名
-    for c in df.columns:
-        cl = c.lower()
-        if cl == 'id':
-            id_col = c
-        elif cl == 'x':
-            x_col = c
-        elif cl == 'y':
-            y_col = c
+        # 检查ID列是否存在
+        if id_col not in gdf.columns:
+            print(f"警告: 未找到ID列 '{id_col}'，将使用索引作为ID")
+            gdf[id_col] = gdf.index
 
-    if x_col and y_col:
-        if id_col:
-            points = df[[id_col, x_col, y_col]].values.tolist()
+        # 提取坐标
+        points = []
+        for idx, row in gdf.iterrows():
+            geom = row.geometry
+            if geom.geom_type == 'Point':
+                x, y = geom.x, geom.y
+                point_id = row[id_col]
+                points.append([point_id, x, y])
+            else:
+                print(f"警告: 跳过非点要素 (索引 {idx})")
+
+        print(f"读取街景点 {len(points)} 个")
+        return points
+
+    # 从CSV读取
+    elif csv_path:
+        df = pd.read_csv(csv_path)
+
+        points = []
+        id_col_name = None
+        x_col = None
+        y_col = None
+
+        # 自动识别列名
+        for c in df.columns:
+            cl = c.lower()
+            if cl == 'id':
+                id_col_name = c
+            elif cl == 'x':
+                x_col = c
+            elif cl == 'y':
+                y_col = c
+
+        if x_col and y_col:
+            if id_col_name:
+                points = df[[id_col_name, x_col, y_col]].values.tolist()
+            else:
+                points = df[[x_col, y_col]].values.tolist()
         else:
-            points = df[[x_col, y_col]].values.tolist()
-    else:
-        # 如果没有识别到列名，按顺序读取
-        if df.shape[1] >= 3:
-            points = df.iloc[:, :3].values.tolist()
-        elif df.shape[1] == 2:
-            points = df.iloc[:, :2].values.tolist()
+            # 如果没有识别到列名，按顺序读取
+            if df.shape[1] >= 3:
+                points = df.iloc[:, :3].values.tolist()
+            elif df.shape[1] == 2:
+                points = df.iloc[:, :2].values.tolist()
 
-    return points
+        print(f"读取街景点 {len(points)} 个")
+        return points
+
+    else:
+        raise ValueError("必须提供 csv_path 或 (gdb_path 和 layer_name)")
 
 
 def wgs84_to_bd09mc(x, y, ak):

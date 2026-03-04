@@ -38,6 +38,8 @@ svi_*/
 
 # Data files
 *.gdb
+!example.gdb/
+example.gdb/*.lock
 *.shp
 *.dbf
 *.shx
