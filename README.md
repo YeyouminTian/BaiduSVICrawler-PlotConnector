@@ -1,5 +1,27 @@
 # 百度街景图爬取、展开、获取各视图与地块关联分析工具
 
+## 核心功能
+
+- **街景图像爬取**：自动下载百度街景全景图像
+- **四种视图方向**：左视图(L)、右视图(R)、前视图(F)、后视图(B)
+- **灵活的爬取模式**：可单独爬取地块视图、道路视图或全部视图
+- **空间关联分析**：建立街景点与地块的空间关联关系
+- **智能拓扑构建**：生成有序的地块-道路-街景点遍历序列
+
+## 视图说明
+
+| 视图 | 方向 | 关联对象 | 用途 |
+|------|------|----------|------|
+| **左视图 (L)** | 垂直于道路，指向左侧 | 地块 | 地块分析、用地识别 |
+| **右视图 (R)** | 垂直于道路，指向右侧 | 地块 | 地块分析、用地识别 |
+| **前视图 (F)** | 沿道路前进方向 | 道路 | 道路景观、设施分析 |
+| **后视图 (B)** | 沿道路后退方向 | 道路 | 道路景观、设施分析 |
+
+**三种爬取模式**：
+- `landuse_only`: 仅爬取左右视图（地块关联）
+- `street_only`: 仅爬取前后视图（道路景观）
+- `all`: 爬取所有视图（完整数据）
+
 ## 一、环境准备
 
 ### 1. 安装依赖包
@@ -88,9 +110,16 @@ pip install -r requirements.txt
 ├─ README.md                         # 项目文档
 │
 └─ output/                           # 输出目录（自动生成）
-    ├─ images/                       # 街景图像
-    ├─ streetview_landuse_mapping.csv    # 基础关联表
-    ├─ landuse_traversal_config.csv      # 地块遍历配置表
+    ├─ images/
+    │   ├─ landuse/                  # 地块相关视图（左右）
+    │   │   ├─ P001_R005_S123_L.jpg
+    │   │   └─ P001_R005_S123_R.jpg
+    │   └─ street/                   # 道路相关视图（前后）
+    │       ├─ R005_S123_F.jpg
+    │       └─ R005_S123_B.jpg
+    ├─ streetview_landuse_mapping.csv    # 地块关联表（左右视图）
+    ├─ streetview_road_views.csv          # 道路视图记录表（前后视图）
+    ├─ landuse_traversal_config.csv       # 地块遍历配置表
     └─ streetview_multi_landuse_mapping.csv  # 多地块关联表
 ```
 
@@ -238,7 +267,11 @@ def equirectangular_to_perspective(equirectangular_img, fov_h, fov_v, heading, p
 
 ### 1. 基础功能
 - **街景图像下载**：自动下载百度街景全景图像
-- **透视展开**：生成左右视图的透视投影图像
+- **四种视图展开**：生成左、右、前、后四个方向的透视投影图像
+- **灵活爬取模式**：
+  - `landuse_only`: 仅左右视图，用于地块分析
+  - `street_only`: 仅前后视图，用于道路景观
+  - `all`: 全部视图，完整数据采集
 - **空间关联**：建立街景点与地块的空间关联关系
 - **断点续存**：支持中断后继续处理，避免重复下载
 
@@ -263,7 +296,41 @@ def equirectangular_to_perspective(equirectangular_img, fov_h, fov_v, heading, p
 
 ### 3. 输出文件说明
 
-#### 3.1 landuse_traversal_config.csv - 地块遍历配置表
+#### 3.1 目录结构
+```
+output/
+├── images/
+│   ├── landuse/              # 地块相关视图（左右）
+│   │   ├── P001_R005_S123_L.jpg
+│   │   └── P001_R005_S123_R.jpg
+│   └── street/               # 道路相关视图（前后）
+│       ├── R005_S123_F.jpg
+│       └── R005_S123_B.jpg
+├── streetview_landuse_mapping.csv    # 地块关联表（左右视图）
+├── streetview_road_views.csv          # 道路视图记录表（前后视图）
+├── landuse_traversal_config.csv       # 地块遍历配置表
+└── streetview_multi_landuse_mapping.csv  # 多地块关联表
+```
+
+#### 3.2 streetview_landuse_mapping.csv - 地块关联表（左右视图）
+```csv
+streetview_id,filename,landuse_id,side,heading,capture_time,x,y,id
+S001,P001_R001_S001_L.jpg,P001,L,90.5,2023-01-01 12:00:00,121.4939,31.2754,1
+S001,P002_R001_S001_R.jpg,P002,R,90.5,2023-01-01 12:00:00,121.4939,31.2754,1
+```
+
+**功能**：记录左右视图与地块的关联关系
+
+#### 3.3 streetview_road_views.csv - 道路视图记录表（前后视图）
+```csv
+road_id,streetview_id,filename,view_type,heading,x,y,capture_time
+005,123,R005_S123_F.jpg,F,90.5,121.4939,31.2754,2024-01-01
+005,123,R005_S123_B.jpg,B,270.5,121.4939,31.2754,2024-01-01
+```
+
+**功能**：记录前后视图的道路关联信息
+
+#### 3.4 landuse_traversal_config.csv - 地块遍历配置表
 ```csv
 landuse_id,road_id,road_sequence,streetview_id,point_sequence,filename_L,filename_R
 P001,R001,1,S001,1,P001_R001_S001_L.jpg,P001_R001_S001_R.jpg
@@ -278,7 +345,7 @@ P001,R001,1,S002,2,P001_R001_S002_L.jpg,P001_R001_S002_R.jpg
 - `point_sequence`: 街景点在道路中的排序序号
 - `filename_L/R`: 左右视图文件名
 
-#### 3.2 streetview_multi_landuse_mapping.csv - 多地块关联表
+#### 3.5 streetview_multi_landuse_mapping.csv - 多地块关联表
 ```csv
 streetview_id,landuse_id,road_id,road_sequence,point_sequence
 S001,P001,R001,1,1
@@ -286,14 +353,6 @@ S001,P002,R001,3,2
 ```
 
 **功能**：记录同一街景点在不同地块中的位置关系
-
-#### 3.3 streetview_landuse_mapping.csv - 基础关联表
-```csv
-streetview_id,filename,landuse_id,side,heading,capture_time,x,y,id
-S001,P001_R001_S001_L.jpg,P001,L,90.5,2023-01-01 12:00:00,121.4939,31.2754,1
-```
-
-**功能**：记录街景点与地块的基础关联关系
 
 ---
 
@@ -316,9 +375,15 @@ if __name__ == '__main__':
         zoom=2,                                     # 街景缩放级别
         save_every=50,                              # 保存间隔
         build_topology=True,                        # 是否构建拓扑关系
-        traversal_direction='clockwise'             # 遍历方向 clockwise顺时针，counterclockwise逆时针
+        traversal_direction='clockwise',            # 遍历方向
+        view_mode='all'                             # 视图模式：'landuse_only', 'street_only', 'all'
     )
 ```
+
+**view_mode 参数说明**：
+- `'landuse_only'`: 仅爬取左右视图，用于地块分析
+- `'street_only'`: 仅爬取前后视图，用于道路景观分析
+- `'all'`: 爬取所有视图，获取完整数据
 
 ### 2. 运行主程序
 ```bash
@@ -328,8 +393,10 @@ python main.py
 **推荐使用模块化版本**，功能与 `main_merged.py` 完全一致，但代码结构更清晰，易于维护。
 
 ### 3. 查看输出结果
-- **街景图像**：`output/images/` 文件夹
-- **基础关联表**：`output/streetview_landuse_mapping.csv`
+- **地块视图图像**：`output/images/landuse/` 文件夹（左右视图）
+- **道路视图图像**：`output/images/street/` 文件夹（前后视图）
+- **地块关联表**：`output/streetview_landuse_mapping.csv`（左右视图）
+- **道路视图记录表**：`output/streetview_road_views.csv`（前后视图）
 - **遍历配置表**：`output/landuse_traversal_config.csv`
 - **多地块关联表**：`output/streetview_multi_landuse_mapping.csv`
 
@@ -361,7 +428,7 @@ main(
 
 ## 七、图像命名规则
 
-### 1. 完整编码体系
+### 1. 左右视图（地块关联）
 ```
 P{地块ID}_R{道路ID}_S{街景点ID}_{L/R}.jpg
 
@@ -370,18 +437,35 @@ P001_R005_S123_L.jpg  # 地块001，道路005，街景点123，左视图
 P001_R005_S123_R.jpg  # 地块001，道路005，街景点123，右视图
 ```
 
-### 2. 信息追溯能力
+### 2. 前后视图（道路视图）
+```
+R{道路ID}_S{街景点ID}_{F/B}.jpg
+
+示例：
+R005_S123_F.jpg  # 道路005，街景点123，前视图
+R005_S123_B.jpg  # 道路005，街景点123，后视图
+```
+
+### 3. 信息追溯能力
 从图像名称可以追溯：
+
+**左右视图**：
 - **地块信息**：P001（地块ID）
 - **道路信息**：R005（道路ID）
 - **街景点信息**：S123（街景点ID）
 - **视角方向**：L/R（左/右视图）
 
-### 3. 左右图对应关系
+**前后视图**：
+- **道路信息**：R005（道路ID）
+- **街景点信息**：S123（街景点ID）
+- **视角方向**：F/B（前/后视图）
+
+### 4. 左右图对应关系
 **重要**：每个街景点的左图和右图对应不同的地块：
 - **左图**：对应街景点左侧的地块
 - **右图**：对应街景点右侧的地块
-- **唯一性**：`P{地块ID}_R{道路ID}_S{街景点ID}` 的组合确保了一一对应关系
+- **前后图**：不关联地块，仅表示道路方向
+- **唯一性**：命名确保了一一对应关系
 
 ---
 
