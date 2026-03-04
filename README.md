@@ -56,8 +56,16 @@ pip install -r requirements.txt
 - 格式：文件地理数据库（.gdb），图层名称：`road_街景测试范围_0712`
 - 用于建立街景点与道路的关联关系
 
-### 3. 街景点数据（CSV）
-- CSV文件需包含街景点的经纬度坐标，推荐字段：`id,X,Y` ，坐标系为WGS84
+### 3. 街景点数据
+
+**方式一：从GDB读取（推荐）**
+- 直接使用GDB文件中的点要素图层
+- 无需单独导出CSV，简化数据准备流程
+- 自动提取WGS84坐标
+- 示例：`example.gdb` 包含 `svi_point` 图层
+
+**方式二：从CSV读取**
+- CSV文件需包含街景点的经纬度坐标，推荐字段：`id,X,Y`，坐标系为WGS84
 - 示例内容：
   ```
   id,X,Y
@@ -66,6 +74,8 @@ pip install -r requirements.txt
   ...
   ```
 - 放在项目根目录下，命名如 `example.csv`
+
+**推荐使用GDB方式**，更加便捷高效。
 
 ### 4. 百度API Key
 - 需注册百度开发者账号，获取"百度地图API"的 `ak`（API Key）
@@ -105,7 +115,11 @@ pip install -r requirements.txt
 │
 ├─ remap_new_block.py              # 地块更新后的重新映射工具
 │
-├─ example.csv                       # 示例街景点数据
+├─ example.gdb                        # 示例地理数据库 ⭐
+│   ├─ block                          # 地块图层（Block_ID）
+│   ├─ road                           # 道路图层（Road_ID）
+│   └─ svi_point                      # 街景点图层（Svi_ID）
+├─ example.csv                        # 示例街景点数据（CSV格式）
 ├─ requirements.txt                  # 依赖包列表
 ├─ README.md                         # 项目文档
 │
@@ -359,26 +373,56 @@ S001,P002,R001,3,2
 ## 六、如何运行
 
 ### 1. 修改配置参数
+
 打开 `main.py`，找到如下部分，根据你的实际数据路径和需求修改参数：
+
+#### 方式一：使用GDB街景点图层（推荐）
 
 ```python
 if __name__ == '__main__':
     main(
-        block_gdb_path='你的地块数据.gdb',        # 地块数据路径
-        block_layer='block',                    # 地块图层名
-        block_id_col='GH_ZXC_2_I',               # 地块ID字段名
-        road_layer='road_街景测试范围_0712',        # 道路图层名
-        road_id_col='OBJECTID',                     # 道路ID字段名
-        streetview_csv_path='example.csv',          # 街景点CSV
+        block_gdb_path='example.gdb',              # GDB数据路径
+        block_layer='block',                       # 地块图层名
+        block_id_col='Block_ID',                   # 地块ID字段名
+        road_layer='road',                         # 道路图层名
+        road_id_col='Road_ID',                     # 道路ID字段名
+        streetview_gdb_layer='svi_point',          # 街景点图层名
+        streetview_id_col='Svi_ID',                # 街景点ID字段名
         baidu_ak='你的百度API Key',                 # 百度API密钥
-        output_dir='output',                        # 输出目录
-        zoom=2,                                     # 街景缩放级别
-        save_every=50,                              # 保存间隔
-        build_topology=True,                        # 是否构建拓扑关系
-        traversal_direction='clockwise',            # 遍历方向
-        view_mode='all'                             # 视图模式：'block_only', 'street_only', 'all'
+        output_dir='output',                       # 输出目录
+        zoom=3,                                    # 街景缩放级别
+        save_every=50,                             # 保存间隔
+        build_topology=True,                       # 是否构建拓扑关系
+        traversal_direction='clockwise',           # 遍历方向
+        view_mode='all'                            # 视图模式
     )
 ```
+
+#### 方式二：使用CSV街景点文件
+
+```python
+if __name__ == '__main__':
+    main(
+        block_gdb_path='你的地块数据.gdb',          # GDB数据路径
+        block_layer='block',                       # 地块图层名
+        block_id_col='Block_ID',                   # 地块ID字段名
+        road_layer='road',                         # 道路图层名
+        road_id_col='Road_ID',                     # 道路ID字段名
+        streetview_csv_path='example.csv',         # 街景点CSV文件
+        baidu_ak='你的百度API Key',                 # 百度API密钥
+        output_dir='output',                       # 输出目录
+        zoom=3,                                    # 街景缩放级别
+        save_every=50,                             # 保存间隔
+        build_topology=True,                       # 是否构建拓扑关系
+        traversal_direction='clockwise',           # 遍历方向
+        view_mode='all'                            # 视图模式
+    )
+```
+
+**参数说明**：
+- `streetview_gdb_layer` 和 `streetview_csv_path` **二选一**
+- GDB方式：街景点与地块、道路在同一GDB中
+- CSV方式：适合已有CSV街景点数据的情况
 
 **view_mode 参数说明**：
 - `'block_only'`: 仅爬取左右视图，用于地块分析
