@@ -51,6 +51,7 @@ def main(
     # 功能开关
     build_topology=True,
     traversal_direction='clockwise',
+    view_mode='all',  # 'landuse_only', 'street_only', 'all'
 
     # 空间匹配参数
     test_limit=None,
@@ -77,6 +78,7 @@ def main(
         save_every: 保存间隔
         build_topology: 是否构建拓扑关系
         traversal_direction: 遍历方向 ('clockwise' 或 'counterclockwise')
+        view_mode: 视图模式 ('landuse_only'=仅左右视图, 'street_only'=仅前后视图, 'all'=全部视图)
         test_limit: 测试模式限制（处理前N个点）
         distance_threshold: 距离阈值（米）
         search_buffer: 搜索缓冲区（米）
@@ -87,6 +89,15 @@ def main(
     os.makedirs(output_dir, exist_ok=True)
     img_dir = os.path.join(output_dir, 'images')
     os.makedirs(img_dir, exist_ok=True)
+
+    # 根据视图模式创建子目录
+    if view_mode in ['landuse_only', 'all']:
+        landuse_img_dir = os.path.join(img_dir, 'landuse')
+        os.makedirs(landuse_img_dir, exist_ok=True)
+
+    if view_mode in ['street_only', 'all']:
+        street_img_dir = os.path.join(img_dir, 'street')
+        os.makedirs(street_img_dir, exist_ok=True)
 
     print("=" * 60)
     print("读取数据中...")
@@ -106,16 +117,33 @@ def main(
 
     # 断点续传
     processed_ids = set()
+
+    # 左右视图的CSV
     mapping_csv_path = os.path.join(output_dir, 'streetview_landuse_mapping.csv')
     current_mapping = []
-    if os.path.exists(mapping_csv_path):
-        try:
-            df_exist = pd.read_csv(mapping_csv_path)
-            processed_ids = set(df_exist['id'].astype(str).unique())
-            current_mapping = df_exist.to_dict('records')
-            print(f"发现已有记录 {len(processed_ids)} 个街景点，将跳过。")
-        except Exception as e:
-            print(f"读取已有mapping失败: {e}")
+    if view_mode in ['landuse_only', 'all']:
+        if os.path.exists(mapping_csv_path):
+            try:
+                df_exist = pd.read_csv(mapping_csv_path)
+                processed_ids = set(df_exist['id'].astype(str).unique())
+                current_mapping = df_exist.to_dict('records')
+                print(f"[地块视图] 发现已有记录 {len(processed_ids)} 个街景点，将跳过。")
+            except Exception as e:
+                print(f"读取已有mapping失败: {e}")
+
+    # 前后视图的CSV
+    road_views_csv_path = os.path.join(output_dir, 'streetview_road_views.csv')
+    current_road_views = []
+    processed_road_ids = set()
+    if view_mode in ['street_only', 'all']:
+        if os.path.exists(road_views_csv_path):
+            try:
+                df_road_exist = pd.read_csv(road_views_csv_path)
+                processed_road_ids = set(df_road_exist['streetview_id'].astype(str).unique())
+                current_road_views = df_road_exist.to_dict('records')
+                print(f"[道路视图] 发现已有记录 {len(processed_road_ids)} 个街景点，将跳过。")
+            except Exception as e:
+                print(f"读取已有road_views失败: {e}")
 
     # 过滤待处理点
     points_to_process = []
@@ -124,7 +152,17 @@ def main(
             pid = str(p[0])
         else:
             pid = f"{p[-2]}_{p[-1]}"
-        if pid not in processed_ids:
+
+        # 根据模式判断是否需要处理
+        should_process = False
+        if view_mode == 'landuse_only':
+            should_process = pid not in processed_ids
+        elif view_mode == 'street_only':
+            should_process = pid not in processed_road_ids
+        else:  # 'all' - 需要两个CSV中都存在才跳过
+            should_process = (pid not in processed_ids) or (pid not in processed_road_ids)
+
+        if should_process:
             points_to_process.append(p)
 
     if test_limit:
@@ -190,10 +228,11 @@ def main(
 
     # 3. 爬取与匹配主循环
     print("=" * 60)
-    print("开始爬取街景...")
+    print(f"开始爬取街景... (模式: {view_mode})")
     print("=" * 60)
 
     new_records = []
+    new_road_views = []
     no_landuse_count = 0
 
     for i, pt_data in enumerate(tqdm(points_to_process, desc="爬取进度")):
@@ -215,7 +254,7 @@ def main(
         heading = float(meta.get('Heading', 0))
         capture_time = meta.get('Time', '')
 
-        # B. 下载与处理图像
+        # B. 下载全景图
         pano = download_panorama_image(sid, zoom)
         if not pano:
             print(f"下载失败: {sid}")
@@ -224,138 +263,313 @@ def main(
         pano_np = cv2.cvtColor(np.array(pano), cv2.COLOR_RGB2BGR)
         out_size = (1024, 683)
 
-        # 左右视图
-        left_view = equirectangular_to_perspective(pano_np, 120, 90, 0, 0, out_size)
-        right_view = equirectangular_to_perspective(pano_np, 120, 90, 180, 0, out_size)
+        # 获取最近道路ID（所有模式都需要）
+        pt_road_map = None
+        for item in sv_road_map:
+            if item['original_id'] == id_val or (len(pt_data) < 3 and f"{item['x']}_{item['y']}" == id_val):
+                pt_road_map = item
+                break
 
-        # 临时保存
-        fname_L = f"{id_val}_L.jpg"
-        fname_R = f"{id_val}_R.jpg"
-        cv2.imwrite(os.path.join(img_dir, fname_L), left_view)
-        cv2.imwrite(os.path.join(img_dir, fname_R), right_view)
+        if pt_road_map is None or pt_road_map['road_id'] is None:
+            continue  # 没有匹配到道路，跳过
 
-        # C. 空间匹配
-        pt_wgs = Point(x, y)
-        pt_proj = gpd.GeoSeries([pt_wgs], crs="EPSG:4326").to_crs(utm_crs)[0]
+        road_id = pt_road_map['road_id']
 
-        buffer_bounds = pt_proj.buffer(search_buffer).bounds
-        possible_idxs = list(landuse_sindex.intersection(buffer_bounds))
+        # === 模式1: 只处理左右视图 ===
+        if view_mode == 'landuse_only':
+            left_view = equirectangular_to_perspective(pano_np, 120, 90, 0, 0, out_size)
+            right_view = equirectangular_to_perspective(pano_np, 120, 90, 180, 0, out_size)
 
-        matched_left = False
-        matched_right = False
+            fname_L = f"{id_val}_L.jpg"
+            fname_R = f"{id_val}_R.jpg"
+            cv2.imwrite(os.path.join(landuse_img_dir, fname_L), left_view)
+            cv2.imwrite(os.path.join(landuse_img_dir, fname_R), right_view)
 
-        if possible_idxs:
-            candidates = landuse_gdf_proj.iloc[possible_idxs].copy()
+            # 空间匹配地块
+            pt_wgs = Point(x, y)
+            pt_proj = gpd.GeoSeries([pt_wgs], crs="EPSG:4326").to_crs(utm_crs)[0]
 
-            # 排除非实体地块
-            if 'GH_LAYOUT' in candidates.columns:
-                candidates = candidates[candidates['GH_LAYOUT'] != 'S1']
+            buffer_bounds = pt_proj.buffer(search_buffer).bounds
+            possible_idxs = list(landuse_sindex.intersection(buffer_bounds))
 
-            if len(candidates) > 0:
-                cand_geoms = candidates.geometry.tolist()
-                cand_ids = candidates[landuse_id_col].tolist()
+            matched_left = False
+            matched_right = False
 
-                # 使用局部切线法或纯Heading法
-                l_id, l_dist, r_id, r_dist = determine_side_strict(
-                    pt_proj, heading, cand_geoms, cand_ids,
-                    road_gdf_proj=road_gdf_proj if use_local_tangent else None,
-                    road_sindex=road_sindex if use_local_tangent else None,
-                    landuse_id_col=landuse_id_col,
-                    use_local_tangent=use_local_tangent
-                )
+            if possible_idxs:
+                candidates = landuse_gdf_proj.iloc[possible_idxs].copy()
 
-                if verbose_matching:
-                    print(f"\n点 {id_val}: heading={heading:.1f}°")
-                    print(f"  左侧: {l_id} (距离: {l_dist:.1f}m)")
-                    print(f"  右侧: {r_id} (距离: {r_dist:.1f}m)")
+                if 'GH_LAYOUT' in candidates.columns:
+                    candidates = candidates[candidates['GH_LAYOUT'] != 'S1']
 
-                if l_id is not None and l_dist < distance_threshold:
-                    new_records.append({
-                        'id': id_val,
-                        'streetview_id': sid,
-                        'filename': fname_L,
-                        'landuse_id': l_id,
-                        'side': 'L',
-                        'x': x,
-                        'y': y,
-                        'heading': heading,
-                        'capture_time': capture_time,
-                        'distance': l_dist
-                    })
-                    matched_left = True
+                if len(candidates) > 0:
+                    cand_geoms = candidates.geometry.tolist()
+                    cand_ids = candidates[landuse_id_col].tolist()
 
-                if r_id is not None and r_dist < distance_threshold:
-                    new_records.append({
-                        'id': id_val,
-                        'streetview_id': sid,
-                        'filename': fname_R,
-                        'landuse_id': r_id,
-                        'side': 'R',
-                        'x': x,
-                        'y': y,
-                        'heading': heading,
-                        'capture_time': capture_time,
-                        'distance': r_dist
-                    })
-                    matched_right = True
+                    l_id, l_dist, r_id, r_dist = determine_side_strict(
+                        pt_proj, heading, cand_geoms, cand_ids,
+                        road_gdf_proj=road_gdf_proj if use_local_tangent else None,
+                        road_sindex=road_sindex if use_local_tangent else None,
+                        landuse_id_col=landuse_id_col,
+                        use_local_tangent=use_local_tangent
+                    )
 
-        if not matched_left and not matched_right:
-            no_landuse_count += 1
+                    if verbose_matching:
+                        print(f"\n点 {id_val}: heading={heading:.1f}°")
+                        print(f"  左侧: {l_id} (距离: {l_dist:.1f}m)")
+                        print(f"  右侧: {r_id} (距离: {r_dist:.1f}m)")
+
+                    if l_id is not None and l_dist < distance_threshold:
+                        new_records.append({
+                            'id': id_val,
+                            'streetview_id': sid,
+                            'filename': fname_L,
+                            'landuse_id': l_id,
+                            'side': 'L',
+                            'x': x,
+                            'y': y,
+                            'heading': heading,
+                            'capture_time': capture_time,
+                            'distance': l_dist
+                        })
+                        matched_left = True
+
+                    if r_id is not None and r_dist < distance_threshold:
+                        new_records.append({
+                            'id': id_val,
+                            'streetview_id': sid,
+                            'filename': fname_R,
+                            'landuse_id': r_id,
+                            'side': 'R',
+                            'x': x,
+                            'y': y,
+                            'heading': heading,
+                            'capture_time': capture_time,
+                            'distance': r_dist
+                        })
+                        matched_right = True
+
+            if not matched_left and not matched_right:
+                no_landuse_count += 1
+
+        # === 模式2: 只处理前后视图 ===
+        elif view_mode == 'street_only':
+            front_view = equirectangular_to_perspective(pano_np, 120, 90, 90, 0, out_size)
+            back_view = equirectangular_to_perspective(pano_np, 120, 90, 270, 0, out_size)
+
+            fname_F = f"R{road_id}_S{id_val}_F.jpg"
+            fname_B = f"R{road_id}_S{id_val}_B.jpg"
+            cv2.imwrite(os.path.join(street_img_dir, fname_F), front_view)
+            cv2.imwrite(os.path.join(street_img_dir, fname_B), back_view)
+
+            new_road_views.append({
+                'road_id': road_id,
+                'streetview_id': id_val,
+                'filename': fname_F,
+                'view_type': 'F',
+                'heading': heading,
+                'x': x,
+                'y': y,
+                'capture_time': capture_time
+            })
+
+            new_road_views.append({
+                'road_id': road_id,
+                'streetview_id': id_val,
+                'filename': fname_B,
+                'view_type': 'B',
+                'heading': heading,
+                'x': x,
+                'y': y,
+                'capture_time': capture_time
+            })
+
+        # === 模式3: 处理所有视图 ===
+        elif view_mode == 'all':
+            left_view = equirectangular_to_perspective(pano_np, 120, 90, 0, 0, out_size)
+            right_view = equirectangular_to_perspective(pano_np, 120, 90, 180, 0, out_size)
+            front_view = equirectangular_to_perspective(pano_np, 120, 90, 90, 0, out_size)
+            back_view = equirectangular_to_perspective(pano_np, 120, 90, 270, 0, out_size)
+
+            # 保存左右视图
+            fname_L = f"{id_val}_L.jpg"
+            fname_R = f"{id_val}_R.jpg"
+            cv2.imwrite(os.path.join(landuse_img_dir, fname_L), left_view)
+            cv2.imwrite(os.path.join(landuse_img_dir, fname_R), right_view)
+
+            # 保存前后视图
+            fname_F = f"R{road_id}_S{id_val}_F.jpg"
+            fname_B = f"R{road_id}_S{id_val}_B.jpg"
+            cv2.imwrite(os.path.join(street_img_dir, fname_F), front_view)
+            cv2.imwrite(os.path.join(street_img_dir, fname_B), back_view)
+
+            # 地块匹配
+            pt_wgs = Point(x, y)
+            pt_proj = gpd.GeoSeries([pt_wgs], crs="EPSG:4326").to_crs(utm_crs)[0]
+
+            buffer_bounds = pt_proj.buffer(search_buffer).bounds
+            possible_idxs = list(landuse_sindex.intersection(buffer_bounds))
+
+            matched_left = False
+            matched_right = False
+
+            if possible_idxs:
+                candidates = landuse_gdf_proj.iloc[possible_idxs].copy()
+
+                if 'GH_LAYOUT' in candidates.columns:
+                    candidates = candidates[candidates['GH_LAYOUT'] != 'S1']
+
+                if len(candidates) > 0:
+                    cand_geoms = candidates.geometry.tolist()
+                    cand_ids = candidates[landuse_id_col].tolist()
+
+                    l_id, l_dist, r_id, r_dist = determine_side_strict(
+                        pt_proj, heading, cand_geoms, cand_ids,
+                        road_gdf_proj=road_gdf_proj if use_local_tangent else None,
+                        road_sindex=road_sindex if use_local_tangent else None,
+                        landuse_id_col=landuse_id_col,
+                        use_local_tangent=use_local_tangent
+                    )
+
+                    if verbose_matching:
+                        print(f"\n点 {id_val}: heading={heading:.1f}°")
+                        print(f"  左侧: {l_id} (距离: {l_dist:.1f}m)")
+                        print(f"  右侧: {r_id} (距离: {r_dist:.1f}m)")
+
+                    if l_id is not None and l_dist < distance_threshold:
+                        new_records.append({
+                            'id': id_val,
+                            'streetview_id': sid,
+                            'filename': fname_L,
+                            'landuse_id': l_id,
+                            'side': 'L',
+                            'x': x,
+                            'y': y,
+                            'heading': heading,
+                            'capture_time': capture_time,
+                            'distance': l_dist
+                        })
+                        matched_left = True
+
+                    if r_id is not None and r_dist < distance_threshold:
+                        new_records.append({
+                            'id': id_val,
+                            'streetview_id': sid,
+                            'filename': fname_R,
+                            'landuse_id': r_id,
+                            'side': 'R',
+                            'x': x,
+                            'y': y,
+                            'heading': heading,
+                            'capture_time': capture_time,
+                            'distance': r_dist
+                        })
+                        matched_right = True
+
+            if not matched_left and not matched_right:
+                no_landuse_count += 1
+
+            # 道路视图记录
+            new_road_views.append({
+                'road_id': road_id,
+                'streetview_id': id_val,
+                'filename': fname_F,
+                'view_type': 'F',
+                'heading': heading,
+                'x': x,
+                'y': y,
+                'capture_time': capture_time
+            })
+
+            new_road_views.append({
+                'road_id': road_id,
+                'streetview_id': id_val,
+                'filename': fname_B,
+                'view_type': 'B',
+                'heading': heading,
+                'x': x,
+                'y': y,
+                'capture_time': capture_time
+            })
 
         # 定期保存
         if (i + 1) % save_every == 0:
-            temp_df = pd.DataFrame(current_mapping + new_records)
-            temp_df.to_csv(mapping_csv_path, index=False, encoding='utf-8')
-            print(f"[进度保存] 已保存 {len(current_mapping) + len(new_records)} 条记录")
+            if view_mode in ['landuse_only', 'all'] and new_records:
+                temp_df = pd.DataFrame(current_mapping + new_records)
+                temp_df.to_csv(mapping_csv_path, index=False, encoding='utf-8')
+                print(f"[地块视图] 已保存 {len(current_mapping) + len(new_records)} 条记录")
 
-    if no_landuse_count > 0:
+            if view_mode in ['street_only', 'all'] and new_road_views:
+                temp_road_df = pd.DataFrame(current_road_views + new_road_views)
+                temp_road_df.to_csv(road_views_csv_path, index=False, encoding='utf-8')
+                print(f"[道路视图] 已保存 {len(current_road_views) + len(new_road_views)} 条记录")
+
+    if no_landuse_count > 0 and view_mode in ['landuse_only', 'all']:
         print(f"警告: {no_landuse_count} 个点未匹配到地块 (可能距离超过 {distance_threshold}m)")
 
-    # 保存
-    final_mapping = current_mapping + new_records
-    mapping_df = pd.DataFrame(final_mapping)
-    mapping_df.to_csv(mapping_csv_path, index=False, encoding='utf-8')
-    mapping_df.to_json(os.path.join(output_dir, 'streetview_landuse_mapping.json'),
-                       orient='records', force_ascii=False)
-    print(f"保存映射表: {len(mapping_df)} 条记录")
-
-    # 4. 构建拓扑与重命名
-    if build_topology and not mapping_df.empty:
-        print("=" * 60)
-        print("构建拓扑结构...")
-        print("=" * 60)
-
-        topology_results = []
-        all_lids = mapping_df['landuse_id'].unique()
-
-        for lid in tqdm(all_lids, desc="拓扑构建"):
-            topo = build_landuse_topology(lid, sv_road_map, landuse_gdf, landuse_id_col,
-                                          mapping_df, traversal_direction)
-            if topo:
-                topology_results.append(topo)
-
-        print(f"构建拓扑: {len(topology_results)} 个地块")
-
-        config_df = generate_final_config(topology_results, mapping_df, output_dir)
-        print(f"生成配置表: {len(config_df)} 条记录")
-
-        execute_rename(config_df, img_dir)
-
-        # 更新filename
-        print("更新映射表文件名...")
-        fname_map = {}
-        for _, row in config_df.iterrows():
-            key = (str(row['streetview_id']), row['side'])
-            fname_map[key] = row['filename']
-
-        def update_fname(row):
-            key = (str(row['id']), row['side'])
-            return fname_map.get(key, row['filename'])
-
-        mapping_df['filename'] = mapping_df.apply(update_fname, axis=1)
+    # 最终保存
+    if view_mode in ['landuse_only', 'all'] and new_records:
+        final_mapping = current_mapping + new_records
+        mapping_df = pd.DataFrame(final_mapping)
         mapping_df.to_csv(mapping_csv_path, index=False, encoding='utf-8')
         mapping_df.to_json(os.path.join(output_dir, 'streetview_landuse_mapping.json'),
                            orient='records', force_ascii=False)
+        print(f"[地块视图] 保存映射表: {len(mapping_df)} 条记录")
+
+    if view_mode in ['street_only', 'all'] and new_road_views:
+        final_road_views = current_road_views + new_road_views
+        road_views_df = pd.DataFrame(final_road_views)
+        road_views_df.to_csv(road_views_csv_path, index=False, encoding='utf-8')
+        road_views_df.to_json(os.path.join(output_dir, 'streetview_road_views.json'),
+                              orient='records', force_ascii=False)
+        print(f"[道路视图] 保存记录表: {len(road_views_df)} 条记录")
+
+    # 4. 构建拓扑与重命名
+    if build_topology and view_mode in ['landuse_only', 'all']:
+        # 读取最终的mapping_df
+        if view_mode == 'landuse_only':
+            if 'mapping_df' not in locals():
+                mapping_df = pd.DataFrame(current_mapping + new_records)
+        else:  # 'all'
+            if 'mapping_df' not in locals():
+                mapping_df = pd.DataFrame(current_mapping + new_records) if new_records else pd.DataFrame(current_mapping)
+
+        if not mapping_df.empty:
+            print("=" * 60)
+            print("构建拓扑结构...")
+            print("=" * 60)
+
+            topology_results = []
+            all_lids = mapping_df['landuse_id'].unique()
+
+            for lid in tqdm(all_lids, desc="拓扑构建"):
+                topo = build_landuse_topology(lid, sv_road_map, landuse_gdf, landuse_id_col,
+                                              mapping_df, traversal_direction)
+                if topo:
+                    topology_results.append(topo)
+
+            print(f"构建拓扑: {len(topology_results)} 个地块")
+
+            config_df = generate_final_config(topology_results, mapping_df, output_dir)
+            print(f"生成配置表: {len(config_df)} 条记录")
+
+            # 执行重命名（传入landuse_img_dir）
+            execute_rename(config_df, landuse_img_dir)
+
+            # 更新filename
+            print("更新映射表文件名...")
+            fname_map = {}
+            for _, row in config_df.iterrows():
+                key = (str(row['streetview_id']), row['side'])
+                fname_map[key] = row['filename']
+
+            def update_fname(row):
+                key = (str(row['id']), row['side'])
+                return fname_map.get(key, row['filename'])
+
+            mapping_df['filename'] = mapping_df.apply(update_fname, axis=1)
+            mapping_df.to_csv(mapping_csv_path, index=False, encoding='utf-8')
+            mapping_df.to_json(os.path.join(output_dir, 'streetview_landuse_mapping.json'),
+                               orient='records', force_ascii=False)
 
     print("=" * 60)
     print("处理完成！")
@@ -384,6 +598,7 @@ if __name__ == '__main__':
         save_every=50,
         build_topology=True,
         traversal_direction='clockwise',
+        view_mode='all',  # 'landuse_only', 'street_only', 'all'
         test_limit=None,
         distance_threshold=100,
         search_buffer=500,
