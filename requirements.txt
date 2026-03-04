@@ -5,3 +5,5 @@ numpy
 Pillow
 requests
 opencv-python
+tqdm
+python-dotenv

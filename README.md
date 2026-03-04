@@ -49,6 +49,19 @@ pip install -r requirements.txt
 - 需注册百度开发者账号，获取"百度地图API"的 `ak`（API Key）
 - [百度API控制台](https://lbsyun.baidu.com/apiconsole/key)
 
+**配置方式**：
+1. 复制项目根目录下的 `.env.example` 文件为 `.env`
+   ```bash
+   cp .env.example .env
+   ```
+2. 编辑 `.env` 文件，填入你的 API Key：
+   ```
+   BAIDU_AK=your_baidu_api_key_here
+   ```
+3. 程序会自动从 `.env` 文件读取 API Key
+
+**注意**：`.env` 文件已添加到 `.gitignore`，不会被提交到 git 仓库，保护你的 API Key 安全。
+
 ---
 
 ## 三、文件结构说明

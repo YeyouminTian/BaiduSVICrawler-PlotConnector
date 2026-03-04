@@ -27,6 +27,7 @@ from topology_utils import (
     generate_final_config,
     execute_rename
 )
+from config import get_baidu_ak
 
 # 屏蔽Pandas的SettingWithCopyWarning警告
 pd.options.mode.chained_assignment = None
@@ -363,6 +364,13 @@ def main(
 
 
 if __name__ == '__main__':
+    # 从配置文件读取 API Key
+    try:
+        baidu_ak = get_baidu_ak()
+    except ValueError as e:
+        print(e)
+        exit(1)
+
     main(
         landuse_gdb_path=r'D:\LifeOS\01Projects\GraduateThesis\251118街景+虹口测试\hongkou_test\hongkou_test.gdb',
         landuse_layer='blocks251206',
@@ -370,7 +378,7 @@ if __name__ == '__main__':
         road_layer='road_hongkou_251206',
         road_id_col='ID',
         streetview_csv_path=r'D:\LifeOS\01Projects\GraduateThesis\251118街景+虹口测试\251216 测试\251206svi.csv',
-        baidu_ak='YOUR_API_KEY_HERE',
+        baidu_ak=baidu_ak,
         output_dir='svi_251206',
         zoom=3,
         save_every=50,

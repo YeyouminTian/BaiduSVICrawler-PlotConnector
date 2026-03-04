@@ -51,3 +51,6 @@ svi_*/
 
 # Claude Code development guide
 CLAUDE.md
+
+# Environment variables
+.env
