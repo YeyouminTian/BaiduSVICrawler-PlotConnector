@@ -53,6 +53,7 @@ example.gdb/*.lock
 
 # Claude Code development guide
 CLAUDE.md
+.claude/
 
 # Environment variables
 .env
