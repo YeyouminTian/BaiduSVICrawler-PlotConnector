@@ -73,7 +73,6 @@ pip install -r requirements.txt
 ├─ example.csv                       # 示例街景点数据
 ├─ requirements.txt                  # 依赖包列表
 ├─ README.md                         # 项目文档
-├─ CLAUDE.md                         # Claude Code 开发指南
 │
 └─ output/                           # 输出目录（自动生成）
     ├─ images/                       # 街景图像
