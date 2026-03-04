@@ -103,9 +103,9 @@ def main(
     print("读取数据中...")
     print("=" * 60)
 
-    # 读取地块数据
-    block_gdf = read_landuse_gdb(block_gdb_path, block_layer, block_id_col)
-    print(f"读取地块 {len(block_gdf)} 个")
+    # 读取街坊/地块数据
+    block_gdf = read_block_gdb(block_gdb_path, block_layer, block_id_col)
+    print(f"读取街坊/地块 {len(block_gdf)} 个")
 
     # 读取道路数据
     road_gdf = read_road_gdb(block_gdb_path, road_layer, road_id_col)
