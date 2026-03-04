@@ -48,3 +48,6 @@ svi_*/
 *.tmp
 *.bak
 *.log
+
+# Claude Code development guide
+CLAUDE.md
