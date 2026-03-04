@@ -5,9 +5,9 @@ import geopandas as gpd
 from geometry_utils import get_utm_crs
 
 
-def read_landuse_gdb(gdb_path, layer_name='landuse', id_col='OBJECTID'):
+def read_block_gdb(gdb_path, layer_name='blocks', id_col='OBJECTID'):
     """
-    读取地块数据（GDB格式）
+    读取街坊/地块数据（GDB格式）
 
     Args:
         gdb_path: GDB文件路径
@@ -15,7 +15,7 @@ def read_landuse_gdb(gdb_path, layer_name='landuse', id_col='OBJECTID'):
         id_col: ID字段名
 
     Returns:
-        GeoDataFrame，包含地块几何、质心和GH_LAYOUT字段
+        GeoDataFrame，包含街坊几何、质心和GH_LAYOUT字段
     """
     print(f"正在读取图层: {layer_name} ...")
     gdf = gpd.read_file(gdb_path, layer=layer_name)

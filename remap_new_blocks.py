@@ -45,20 +45,20 @@ def project_gdf(gdf, target_crs=None):
 # 地块数据读取
 # ============================================================================
 
-def read_landuse_data(landuse_path, layer_name=None, id_col='OBJECTID'):
+def read_block_data(block_path, layer_name=None, id_col='OBJECTID'):
     """
     读取地块数据，支持GDB和SHP文件
     """
-    print(f"正在读取地块数据: {landuse_path}")
+    print(f"正在读取地块数据: {block_path}")
     
-    if landuse_path.endswith('.gdb') or landuse_path.endswith('.gdb/'):
+    if block_path.endswith('.gdb') or block_path.endswith('.gdb/'):
         if layer_name is None:
             raise ValueError("GDB文件必须指定layer_name参数")
         print(f"  图层: {layer_name}")
-        gdf = gpd.read_file(landuse_path, layer=layer_name)
+        gdf = gpd.read_file(block_path, layer=layer_name)
     else:
         # SHP文件
-        gdf = gpd.read_file(landuse_path)
+        gdf = gpd.read_file(block_path)
     
     if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
         gdf = gdf.to_crs(epsg=4326)
@@ -186,7 +186,7 @@ def get_tangent_at_distance(road_geom, dist, direction):
     return vec * direction
 
 def determine_side_strict(sv_point, sv_heading, candidate_geoms, candidate_ids, 
-                          road_gdf_proj=None, road_sindex=None, landuse_id_col='OBJECTID',
+                          road_gdf_proj=None, road_sindex=None, block_id_col='OBJECTID',
                           use_local_tangent=True):
     """
     判断候选地块是在街景点的左侧还是右侧
@@ -196,7 +196,7 @@ def determine_side_strict(sv_point, sv_heading, candidate_geoms, candidate_ids,
         # 构建临时的candidates GeoDataFrame
         candidates_data = []
         for geom, oid in zip(candidate_geoms, candidate_ids):
-            candidates_data.append({landuse_id_col: oid, 'geometry': geom})
+            candidates_data.append({block_id_col: oid, 'geometry': geom})
         
         if not candidates_data:
             return None, float('inf'), None, float('inf')
@@ -222,7 +222,7 @@ def determine_side_strict(sv_point, sv_heading, candidate_geoms, candidate_ids,
         right_candidates = []
         
         for idx, row in candidates_gdf.iterrows():
-            landuse_id = row[landuse_id_col]
+            block_id = row[block_id_col]
             geom = row.geometry
             centroid = geom.centroid
             
@@ -242,9 +242,9 @@ def determine_side_strict(sv_point, sv_heading, candidate_geoms, candidate_ids,
             dist_to_border = sv_point.distance(geom)
             
             if side == 'L':
-                left_candidates.append((landuse_id, dist_to_border))
+                left_candidates.append((block_id, dist_to_border))
             else:
-                right_candidates.append((landuse_id, dist_to_border))
+                right_candidates.append((block_id, dist_to_border))
         
         left_candidates.sort(key=lambda x: x[1])
         right_candidates.sort(key=lambda x: x[1])
@@ -302,18 +302,18 @@ def calculate_angle(origin, point):
         angle += 2 * math.pi
     return angle
 
-def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, landuse_id_col, 
-                           streetview_landuse_mapping, traversal_direction='clockwise'):
+def build_block_topology(block_id, streetview_road_mapping, block_gdf, block_id_col, 
+                           streetview_block_mapping, traversal_direction='clockwise'):
     """为单个地块建立道路和街景点的拓扑顺序"""
     try:
-        landuse_row = landuse_gdf[landuse_gdf[landuse_id_col] == landuse_id].iloc[0]
+        block_row = block_gdf[block_gdf[block_id_col] == block_id].iloc[0]
     except IndexError:
         return None
         
-    landuse_centroid = (landuse_row['centroid_x'], landuse_row['centroid_y'])
+    block_centroid = (block_row['centroid_x'], block_row['centroid_y'])
     
     # 筛选关联的街景点
-    related_records = streetview_landuse_mapping[streetview_landuse_mapping['landuse_id'] == landuse_id]
+    related_records = streetview_block_mapping[streetview_block_mapping['block_id'] == block_id]
     related_sv_ids = related_records['id'].unique()
     
     # 将街景点按道路归类
@@ -346,14 +346,14 @@ def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, lan
     
     road_angles = []
     for rid, rc in road_centroids.items():
-        ang = calculate_angle(landuse_centroid, rc)
+        ang = calculate_angle(block_centroid, rc)
         road_angles.append((rid, ang))
     
     is_clockwise = (traversal_direction == 'clockwise')
     road_angles.sort(key=lambda x: x[1], reverse=not is_clockwise)
     
     topology = {
-        'landuse_id': landuse_id,
+        'block_id': block_id,
         'road_sequence': []
     }
     
@@ -361,7 +361,7 @@ def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, lan
         points = road_groups[road_id]
         points_with_angle = []
         for p in points:
-            ang = calculate_angle(landuse_centroid, (p['x'], p['y']))
+            ang = calculate_angle(block_centroid, (p['x'], p['y']))
             points_with_angle.append((p, ang))
         
         points_with_angle.sort(key=lambda x: x[1], reverse=not is_clockwise)
@@ -396,11 +396,11 @@ def generate_final_config(topology_list, mapping_df, output_dir):
     # 建立mapping的快速查找
     mapping_dict = {}
     for _, row in mapping_df.iterrows():
-        key = (str(row['id']), row['landuse_id'])
+        key = (str(row['id']), row['block_id'])
         mapping_dict[key] = row['side']
     
     for topo in topology_list:
-        lid = topo['landuse_id']
+        lid = topo['block_id']
         for road in topo['road_sequence']:
             rid = road['road_id']
             r_seq = road['sequence']
@@ -415,7 +415,7 @@ def generate_final_config(topology_list, mapping_df, output_dir):
                 new_filename = f"P{lid}_R{rid}_S{sid}_{side}.jpg"
                 
                 config_rows.append({
-                    'landuse_id': lid,
+                    'block_id': lid,
                     'road_id': rid,
                     'road_sequence': r_seq,
                     'streetview_id': sid,
@@ -425,7 +425,7 @@ def generate_final_config(topology_list, mapping_df, output_dir):
                 })
                 
     df = pd.DataFrame(config_rows)
-    df.to_csv(os.path.join(output_dir, 'landuse_traversal_config.csv'), index=False, encoding='utf-8')
+    df.to_csv(os.path.join(output_dir, 'block_traversal_config.csv'), index=False, encoding='utf-8')
     return df
 
 def copy_and_rename_images(config_df, old_img_dir, new_img_dir, old_mapping_df):
@@ -489,9 +489,9 @@ def copy_and_rename_images(config_df, old_img_dir, new_img_dir, old_mapping_df):
 
 def main(
     # 新地块数据
-    new_landuse_path,
-    new_landuse_layer=None,  # 如果是shp文件，这个参数会被忽略
-    new_landuse_id_col='ORIG_FID',
+    new_block_path,
+    new_block_layer=None,  # 如果是shp文件，这个参数会被忽略
+    new_block_id_col='ORIG_FID',
     
     # 道路数据
     road_path=None,
@@ -525,7 +525,7 @@ def main(
         old_mapping_df = pd.read_csv(old_mapping_file)
         old_img_dir = os.path.join(os.path.dirname(old_mapping_file), 'images')
     elif old_output_dir:
-        mapping_path = os.path.join(old_output_dir, 'streetview_landuse_mapping.csv')
+        mapping_path = os.path.join(old_output_dir, 'streetview_block_mapping.csv')
         if not os.path.exists(mapping_path):
             raise FileNotFoundError(f"未找到映射文件: {mapping_path}")
         old_mapping_df = pd.read_csv(mapping_path)
@@ -537,13 +537,13 @@ def main(
     
     # 2. 读取新地块数据
     print("\n读取新地块数据...")
-    new_landuse_gdf = read_landuse_data(new_landuse_path, new_landuse_layer, new_landuse_id_col)
-    print(f"读取地块 {len(new_landuse_gdf)} 个")
+    new_block_gdf = read_block_data(new_block_path, new_block_layer, new_block_id_col)
+    print(f"读取地块 {len(new_block_gdf)} 个")
     
     # 3. 读取道路数据
     print("\n读取道路数据...")
     if road_path is None:
-        road_path = new_landuse_path  # 默认使用地块数据路径
+        road_path = new_block_path  # 默认使用地块数据路径
     
     if road_path.endswith('.gdb') or road_path.endswith('.gdb/'):
         road_gdf = gpd.read_file(road_path, layer=road_layer)
@@ -558,8 +558,8 @@ def main(
     
     # 4. 准备空间分析环境
     print("\n构建空间索引与投影...")
-    new_landuse_gdf_proj, utm_crs = project_gdf(new_landuse_gdf)
-    new_landuse_sindex = new_landuse_gdf_proj.sindex
+    new_block_gdf_proj, utm_crs = project_gdf(new_block_gdf)
+    new_block_sindex = new_block_gdf_proj.sindex
     
     road_gdf_proj = road_gdf.to_crs(utm_crs)
     road_sindex = road_gdf_proj.sindex
@@ -626,14 +626,14 @@ def main(
         pt_proj = gpd.GeoSeries([pt_wgs], crs="EPSG:4326").to_crs(utm_crs)[0]
         
         buffer_bounds = pt_proj.buffer(search_buffer).bounds
-        possible_idxs = list(new_landuse_sindex.intersection(buffer_bounds))
+        possible_idxs = list(new_block_sindex.intersection(buffer_bounds))
         
         if not possible_idxs:
             no_match_count += 1
             no_candidates_count += 1
             continue
         
-        candidates = new_landuse_gdf_proj.iloc[possible_idxs].copy()
+        candidates = new_block_gdf_proj.iloc[possible_idxs].copy()
         
         # 排除非实体地块
         if 'GH_LAYOUT' in candidates.columns:
@@ -645,24 +645,24 @@ def main(
             continue
         
         cand_geoms = candidates.geometry.tolist()
-        cand_ids = candidates[new_landuse_id_col].tolist()
+        cand_ids = candidates[new_block_id_col].tolist()
         
         # 判断左右侧（与 main_merged.py 逻辑一致：先判断左右，再检查距离）
         l_id, l_dist, r_id, r_dist = determine_side_strict(
             pt_proj, heading, cand_geoms, cand_ids,
             road_gdf_proj=road_gdf_proj if use_local_tangent else None,
             road_sindex=road_sindex if use_local_tangent else None,
-            landuse_id_col=new_landuse_id_col,
+            block_id_col=new_block_id_col,
             use_local_tangent=use_local_tangent
         )
         
         # 根据原side选择匹配的地块（与 main_merged.py 逻辑一致）
-        matched_landuse_id = None
+        matched_block_id = None
         matched_dist = float('inf')
         
         if old_side == 'L':
             if l_id is not None and l_dist < distance_threshold:
-                matched_landuse_id = l_id
+                matched_block_id = l_id
                 matched_dist = l_dist
             else:
                 # 左侧没有匹配，直接跳过
@@ -676,7 +676,7 @@ def main(
                 continue
         elif old_side == 'R':
             if r_id is not None and r_dist < distance_threshold:
-                matched_landuse_id = r_id
+                matched_block_id = r_id
                 matched_dist = r_dist
             else:
                 # 右侧没有匹配，直接跳过
@@ -689,12 +689,12 @@ def main(
                     distance_too_far_count += 1
                 continue
         
-        if matched_landuse_id is not None:
+        if matched_block_id is not None:
             new_mapping_records.append({
                 'id': sv_id,
                 'streetview_id': old_row.get('streetview_id', sv_id),
                 'filename': old_filename,  # 保留原文件名
-                'landuse_id': matched_landuse_id,
+                'block_id': matched_block_id,
                 'side': old_side,
                 'x': x,
                 'y': y,
@@ -718,10 +718,10 @@ def main(
     # 7. 构建拓扑关系
     print("\n构建拓扑结构...")
     topology_results = []
-    all_lids = new_mapping_df['landuse_id'].unique()
+    all_lids = new_mapping_df['block_id'].unique()
     
     for lid in tqdm(all_lids, desc="拓扑构建"):
-        topo = build_landuse_topology(lid, sv_road_map, new_landuse_gdf, new_landuse_id_col, 
+        topo = build_block_topology(lid, sv_road_map, new_block_gdf, new_block_id_col, 
                                       new_mapping_df, traversal_direction)
         if topo:
             topology_results.append(topo)
@@ -731,7 +731,7 @@ def main(
     # 8. 生成配置表和复制文件
     print("\n生成配置表...")
     if new_output_dir is None:
-        new_output_dir = 'svi_new_landuse'
+        new_output_dir = 'svi_new_blocks'
     
     os.makedirs(new_output_dir, exist_ok=True)
     new_img_dir = os.path.join(new_output_dir, 'images')
@@ -740,9 +740,9 @@ def main(
     print(f"生成配置表: {len(config_df)} 条记录")
     
     # 保存新映射文件
-    new_mapping_df.to_csv(os.path.join(new_output_dir, 'streetview_landuse_mapping.csv'), 
+    new_mapping_df.to_csv(os.path.join(new_output_dir, 'streetview_block_mapping.csv'), 
                          index=False, encoding='utf-8')
-    new_mapping_df.to_json(os.path.join(new_output_dir, 'streetview_landuse_mapping.json'), 
+    new_mapping_df.to_json(os.path.join(new_output_dir, 'streetview_block_mapping.json'), 
                           orient='records', force_ascii=False)
     
     # 复制并重命名图片
@@ -760,9 +760,9 @@ def main(
         return fname_map.get(key, row['filename'])
     
     new_mapping_df['filename'] = new_mapping_df.apply(update_fname, axis=1)
-    new_mapping_df.to_csv(os.path.join(new_output_dir, 'streetview_landuse_mapping.csv'), 
+    new_mapping_df.to_csv(os.path.join(new_output_dir, 'streetview_block_mapping.csv'), 
                          index=False, encoding='utf-8')
-    new_mapping_df.to_json(os.path.join(new_output_dir, 'streetview_landuse_mapping.json'), 
+    new_mapping_df.to_json(os.path.join(new_output_dir, 'streetview_block_mapping.json'), 
                           orient='records', force_ascii=False)
     
     print("\n" + "=" * 60)
@@ -773,9 +773,9 @@ def main(
 if __name__ == '__main__':
     main(
         # 新地块数据
-        new_landuse_path=r'D:\LifeOS\01Projects\GraduateThesis\251118街景+虹口测试\hongkou_test\hongkou_test.gdb',
-        new_landuse_layer='hk_251207_result',
-        new_landuse_id_col='ORIG_FID',
+        new_block_path=r'D:\LifeOS\01Projects\GraduateThesis\251118街景+虹口测试\hongkou_test\hongkou_test.gdb',
+        new_block_layer='hk_251207_result',
+        new_block_id_col='ORIG_FID',
         
         # 道路数据（可以用原来的）
         road_path=r'D:\LifeOS\01Projects\GraduateThesis\251118街景+虹口测试\hongkou_test\hongkou_test.gdb',

@@ -50,31 +50,31 @@ def calculate_angle(origin, point):
     return angle
 
 
-def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, landuse_id_col,
-                           streetview_landuse_mapping, traversal_direction='clockwise'):
+def build_block_topology(block_id, streetview_road_mapping, block_gdf, block_id_col,
+                          streetview_block_mapping, traversal_direction='clockwise'):
     """
-    为单个地块建立道路和街景点的拓扑顺序
+    为单个街坊/地块建立道路和街景点的拓扑顺序
 
     Args:
-        landuse_id: 地块ID
+        block_id: 街坊/地块ID
         streetview_road_mapping: 街景点-道路映射列表
-        landuse_gdf: 地块GeoDataFrame
-        landuse_id_col: 地块ID列名
-        streetview_landuse_mapping: 街景点-地块映射DataFrame
+        block_gdf: 街坊/地块GeoDataFrame
+        block_id_col: 街坊/地块ID列名
+        streetview_block_mapping: 街景点-街坊映射DataFrame
         traversal_direction: 遍历方向 ('clockwise' 或 'counterclockwise')
 
     Returns:
         拓扑字典或None
     """
     try:
-        landuse_row = landuse_gdf[landuse_gdf[landuse_id_col] == landuse_id].iloc[0]
+        block_row = block_gdf[block_gdf[block_id_col] == block_id].iloc[0]
     except IndexError:
         return None
 
-    landuse_centroid = (landuse_row['centroid_x'], landuse_row['centroid_y'])
+    block_centroid = (block_row['centroid_x'], block_row['centroid_y'])
 
     # 筛选关联的街景点
-    related_records = streetview_landuse_mapping[streetview_landuse_mapping['landuse_id'] == landuse_id]
+    related_records = streetview_block_mapping[streetview_block_mapping['block_id'] == block_id]
     related_sv_ids = related_records['id'].unique()
 
     # 将街景点按道路归类
@@ -112,14 +112,14 @@ def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, lan
 
     road_angles = []
     for rid, rc in road_centroids.items():
-        ang = calculate_angle(landuse_centroid, rc)
+        ang = calculate_angle(block_centroid, rc)
         road_angles.append((rid, ang))
 
     is_clockwise = (traversal_direction == 'clockwise')
     road_angles.sort(key=lambda x: x[1], reverse=not is_clockwise)
 
     topology = {
-        'landuse_id': landuse_id,
+        'block_id': block_id,
         'road_sequence': []
     }
 
@@ -128,7 +128,7 @@ def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, lan
         points = road_groups[road_id]
         points_with_angle = []
         for p in points:
-            ang = calculate_angle(landuse_centroid, (p['x'], p['y']))
+            ang = calculate_angle(block_centroid, (p['x'], p['y']))
             points_with_angle.append((p, ang))
 
         points_with_angle.sort(key=lambda x: x[1], reverse=not is_clockwise)
@@ -159,7 +159,7 @@ def generate_final_config(topology_list, mapping_df, output_dir):
 
     Args:
         topology_list: 拓扑结构列表
-        mapping_df: 街景点-地块映射DataFrame
+        mapping_df: 街景点-街坊映射DataFrame
         output_dir: 输出目录
 
     Returns:
@@ -170,11 +170,11 @@ def generate_final_config(topology_list, mapping_df, output_dir):
     # 建立mapping的快速查找
     mapping_dict = {}
     for _, row in mapping_df.iterrows():
-        key = (str(row['id']), row['landuse_id'])
+        key = (str(row['id']), row['block_id'])
         mapping_dict[key] = row['side']
 
     for topo in topology_list:
-        lid = topo['landuse_id']
+        lid = topo['block_id']
         for road in topo['road_sequence']:
             rid = road['road_id']
             r_seq = road['sequence']
@@ -189,7 +189,7 @@ def generate_final_config(topology_list, mapping_df, output_dir):
                 new_filename = f"P{lid}_R{rid}_S{sid}_{side}.jpg"
 
                 config_rows.append({
-                    'landuse_id': lid,
+                    'block_id': lid,
                     'road_id': rid,
                     'road_sequence': r_seq,
                     'streetview_id': sid,
@@ -199,7 +199,7 @@ def generate_final_config(topology_list, mapping_df, output_dir):
                 })
 
     df = pd.DataFrame(config_rows)
-    df.to_csv(os.path.join(output_dir, 'landuse_traversal_config.csv'), index=False, encoding='utf-8')
+    df.to_csv(os.path.join(output_dir, 'block_traversal_config.csv'), index=False, encoding='utf-8')
     return df
 
 

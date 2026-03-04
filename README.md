@@ -18,7 +18,7 @@
 | **后视图 (B)** | 沿道路后退方向 | 道路 | 道路景观、设施分析 |
 
 **三种爬取模式**：
-- `landuse_only`: 仅爬取左右视图（地块关联）
+- `block_only`: 仅爬取左右视图（地块关联）
 - `street_only`: 仅爬取前后视图（道路景观）
 - `all`: 爬取所有视图（完整数据）
 
@@ -97,13 +97,13 @@ pip install -r requirements.txt
 ├─ main_merged.py                    # 单文件版本（保留作参考）
 │
 ├─ geometry_utils.py                 # 几何与投影工具
-├─ landuse_utils.py                  # 地块数据读取模块
+├─ block_utils.py                  # 地块数据读取模块
 ├─ streetview_utils.py               # 街景API与点读取模块
 ├─ image_utils.py                    # 图像处理模块
 ├─ spatial_analysis.py               # 空间分析与左右判别模块（局部切线法）
 ├─ topology_utils.py                 # 拓扑关系处理模块
 │
-├─ remap_new_landuse.py              # 地块更新后的重新映射工具
+├─ remap_new_block.py              # 地块更新后的重新映射工具
 │
 ├─ example.csv                       # 示例街景点数据
 ├─ requirements.txt                  # 依赖包列表
@@ -111,22 +111,22 @@ pip install -r requirements.txt
 │
 └─ output/                           # 输出目录（自动生成）
     ├─ images/
-    │   ├─ landuse/                  # 地块相关视图（左右）
+    │   ├─ block/                  # 地块相关视图（左右）
     │   │   ├─ P001_R005_S123_L.jpg
     │   │   └─ P001_R005_S123_R.jpg
     │   └─ street/                   # 道路相关视图（前后）
     │       ├─ R005_S123_F.jpg
     │       └─ R005_S123_B.jpg
-    ├─ streetview_landuse_mapping.csv    # 地块关联表（左右视图）
+    ├─ streetview_block_mapping.csv    # 地块关联表（左右视图）
     ├─ streetview_road_views.csv          # 道路视图记录表（前后视图）
-    ├─ landuse_traversal_config.csv       # 地块遍历配置表
-    └─ streetview_multi_landuse_mapping.csv  # 多地块关联表
+    ├─ block_traversal_config.csv       # 地块遍历配置表
+    └─ streetview_multi_block_mapping.csv  # 多地块关联表
 ```
 
 ### 模块职责
 
 - **geometry_utils.py**: UTM投影计算与坐标转换
-- **landuse_utils.py**: 读取GDB地块数据，计算质心
+- **block_utils.py**: 读取GDB地块数据，计算质心
 - **streetview_utils.py**: 百度API调用、坐标转换、街景下载
 - **image_utils.py**: 全景图透视展开
 - **spatial_analysis.py**: 空间关联算法（局部切线法 + 纯Heading法）
@@ -167,22 +167,22 @@ def determine_side_robust(pt_proj, heading, road_gdf, road_sindex, candidates):
 **适用场景**：直线道路、无道路几何数据、快速处理
 
 ```python
-def judge_left_right(streetview_pt, road_dir, landuse_centroid):
+def judge_left_right(streetview_pt, road_dir, block_centroid):
     """
     使用叉积判断地块相对于街景点的左右位置
 
     算法原理：
     1. 计算道路方向向量（基于街景拍摄方向）
     2. 计算地块质心到街景点的向量
-    3. 计算叉积：landuse_vec × road_vec
+    3. 计算叉积：block_vec × road_vec
     4. 叉积正负决定左右位置
     """
 ```
 
 **数学原理**：
 - 道路方向向量：`road_vec = [cos(θ), sin(θ)]`
-- 地块向量：`landuse_vec = [dx, dy]`
-- 叉积：`cross = landuse_vec[0] * road_vec[1] - landuse_vec[1] * road_vec[0]`
+- 地块向量：`block_vec = [dx, dy]`
+- 叉积：`cross = block_vec[0] * road_vec[1] - block_vec[1] * road_vec[0]`
 - 判断：`cross > 0` 为左侧，`cross < 0` 为右侧
 
 #### 1.3 算法选择
@@ -204,7 +204,7 @@ main(
 
 #### 2.1 地块-道路-街景点三元关联
 ```python
-def build_landuse_topology(landuse_id, streetview_road_mapping, landuse_gdf, landuse_id_col, streetview_landuse_mapping, traversal_direction='clockwise'):
+def build_block_topology(block_id, streetview_road_mapping, block_gdf, block_id_col, streetview_block_mapping, traversal_direction='clockwise'):
     """
     为单个地块建立完整的拓扑关系
     
@@ -269,7 +269,7 @@ def equirectangular_to_perspective(equirectangular_img, fov_h, fov_v, heading, p
 - **街景图像下载**：自动下载百度街景全景图像
 - **四种视图展开**：生成左、右、前、后四个方向的透视投影图像
 - **灵活爬取模式**：
-  - `landuse_only`: 仅左右视图，用于地块分析
+  - `block_only`: 仅左右视图，用于地块分析
   - `street_only`: 仅前后视图，用于道路景观
   - `all`: 全部视图，完整数据采集
 - **空间关联**：建立街景点与地块的空间关联关系
@@ -300,21 +300,21 @@ def equirectangular_to_perspective(equirectangular_img, fov_h, fov_v, heading, p
 ```
 output/
 ├── images/
-│   ├── landuse/              # 地块相关视图（左右）
+│   ├── block/              # 地块相关视图（左右）
 │   │   ├── P001_R005_S123_L.jpg
 │   │   └── P001_R005_S123_R.jpg
 │   └── street/               # 道路相关视图（前后）
 │       ├── R005_S123_F.jpg
 │       └── R005_S123_B.jpg
-├── streetview_landuse_mapping.csv    # 地块关联表（左右视图）
+├── streetview_block_mapping.csv    # 地块关联表（左右视图）
 ├── streetview_road_views.csv          # 道路视图记录表（前后视图）
-├── landuse_traversal_config.csv       # 地块遍历配置表
-└── streetview_multi_landuse_mapping.csv  # 多地块关联表
+├── block_traversal_config.csv       # 地块遍历配置表
+└── streetview_multi_block_mapping.csv  # 多地块关联表
 ```
 
-#### 3.2 streetview_landuse_mapping.csv - 地块关联表（左右视图）
+#### 3.2 streetview_block_mapping.csv - 地块关联表（左右视图）
 ```csv
-streetview_id,filename,landuse_id,side,heading,capture_time,x,y,id
+streetview_id,filename,block_id,side,heading,capture_time,x,y,id
 S001,P001_R001_S001_L.jpg,P001,L,90.5,2023-01-01 12:00:00,121.4939,31.2754,1
 S001,P002_R001_S001_R.jpg,P002,R,90.5,2023-01-01 12:00:00,121.4939,31.2754,1
 ```
@@ -330,24 +330,24 @@ road_id,streetview_id,filename,view_type,heading,x,y,capture_time
 
 **功能**：记录前后视图的道路关联信息
 
-#### 3.4 landuse_traversal_config.csv - 地块遍历配置表
+#### 3.4 block_traversal_config.csv - 地块遍历配置表
 ```csv
-landuse_id,road_id,road_sequence,streetview_id,point_sequence,filename_L,filename_R
+block_id,road_id,road_sequence,streetview_id,point_sequence,filename_L,filename_R
 P001,R001,1,S001,1,P001_R001_S001_L.jpg,P001_R001_S001_R.jpg
 P001,R001,1,S002,2,P001_R001_S002_L.jpg,P001_R001_S002_R.jpg
 ```
 
 **字段说明**：
-- `landuse_id`: 地块ID
+- `block_id`: 地块ID
 - `road_id`: 道路ID
 - `road_sequence`: 道路在地块中的排序序号
 - `streetview_id`: 街景点ID
 - `point_sequence`: 街景点在道路中的排序序号
 - `filename_L/R`: 左右视图文件名
 
-#### 3.5 streetview_multi_landuse_mapping.csv - 多地块关联表
+#### 3.5 streetview_multi_block_mapping.csv - 多地块关联表
 ```csv
-streetview_id,landuse_id,road_id,road_sequence,point_sequence
+streetview_id,block_id,road_id,road_sequence,point_sequence
 S001,P001,R001,1,1
 S001,P002,R001,3,2
 ```
@@ -364,9 +364,9 @@ S001,P002,R001,3,2
 ```python
 if __name__ == '__main__':
     main(
-        landuse_gdb_path='你的地块数据.gdb',        # 地块数据路径
-        landuse_layer='landuse',                    # 地块图层名
-        landuse_id_col='GH_ZXC_2_I',               # 地块ID字段名
+        block_gdb_path='你的地块数据.gdb',        # 地块数据路径
+        block_layer='block',                    # 地块图层名
+        block_id_col='GH_ZXC_2_I',               # 地块ID字段名
         road_layer='road_街景测试范围_0712',        # 道路图层名
         road_id_col='OBJECTID',                     # 道路ID字段名
         streetview_csv_path='example.csv',          # 街景点CSV
@@ -376,12 +376,12 @@ if __name__ == '__main__':
         save_every=50,                              # 保存间隔
         build_topology=True,                        # 是否构建拓扑关系
         traversal_direction='clockwise',            # 遍历方向
-        view_mode='all'                             # 视图模式：'landuse_only', 'street_only', 'all'
+        view_mode='all'                             # 视图模式：'block_only', 'street_only', 'all'
     )
 ```
 
 **view_mode 参数说明**：
-- `'landuse_only'`: 仅爬取左右视图，用于地块分析
+- `'block_only'`: 仅爬取左右视图，用于地块分析
 - `'street_only'`: 仅爬取前后视图，用于道路景观分析
 - `'all'`: 爬取所有视图，获取完整数据
 
@@ -393,26 +393,26 @@ python main.py
 **推荐使用模块化版本**，功能与 `main_merged.py` 完全一致，但代码结构更清晰，易于维护。
 
 ### 3. 查看输出结果
-- **地块视图图像**：`output/images/landuse/` 文件夹（左右视图）
+- **地块视图图像**：`output/images/block/` 文件夹（左右视图）
 - **道路视图图像**：`output/images/street/` 文件夹（前后视图）
-- **地块关联表**：`output/streetview_landuse_mapping.csv`（左右视图）
+- **地块关联表**：`output/streetview_block_mapping.csv`（左右视图）
 - **道路视图记录表**：`output/streetview_road_views.csv`（前后视图）
-- **遍历配置表**：`output/landuse_traversal_config.csv`
-- **多地块关联表**：`output/streetview_multi_landuse_mapping.csv`
+- **遍历配置表**：`output/block_traversal_config.csv`
+- **多地块关联表**：`output/streetview_multi_block_mapping.csv`
 
 ### 4. 地块数据更新后的重新映射
 
 当你的地块数据发生更新（边界调整、ID变更等），无需重新爬取街景图像：
 
 ```bash
-python remap_new_landuse.py
+python remap_new_block.py
 ```
 
 **修改配置**：
 ```python
 main(
-    new_landuse_path='新地块.gdb',      # 新地块数据
-    new_landuse_layer='new_blocks',
+    new_block_path='新地块.gdb',      # 新地块数据
+    new_block_layer='new_blocks',
     old_output_dir='svi_251206',        # 旧输出目录
     new_output_dir='svi_251207',        # 新输出目录
     use_local_tangent=True

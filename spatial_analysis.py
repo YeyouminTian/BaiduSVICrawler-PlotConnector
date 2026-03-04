@@ -13,32 +13,32 @@ from shapely.ops import nearest_points
 # 基础方法：纯Heading法
 # ============================================================================
 
-def judge_left_right(streetview_pt, road_dir, landuse_centroid):
+def judge_left_right(streetview_pt, road_dir, block_centroid):
     """
-    判断地块相对于街景点的左右位置（使用叉乘）
+    判断街坊/地块相对于街景点的左右位置（使用叉乘）
 
     Args:
         streetview_pt: 街景点坐标 (x, y)
         road_dir: 道路方向角度（度，0=正北，90=正东，180=正南，270=正西）
-        landuse_centroid: 地块质心坐标 (x, y)
+        block_centroid: 街坊/地块质心坐标 (x, y)
 
     Returns:
-        'L' 或 'R': 地块相对于街景点的左右位置
+        'L' 或 'R': 街坊/地块相对于街景点的左右位置
     """
-    dx = landuse_centroid[0] - streetview_pt[0]
-    dy = landuse_centroid[1] - streetview_pt[1]
+    dx = block_centroid[0] - streetview_pt[0]
+    dy = block_centroid[1] - streetview_pt[1]
 
     # 计算道路方向向量（单位向量）
     theta = radians(90 - road_dir)  # 转换为数学坐标系
     road_vec = np.array([cos(theta), sin(theta)])
 
-    # 计算地块到街景点的向量
-    landuse_vec = np.array([dx, dy])
+    # 计算街坊/地块到街景点的向量
+    block_vec = np.array([dx, dy])
 
-    # 计算叉积：landuse_vec × road_vec
-    cross = landuse_vec[0] * road_vec[1] - landuse_vec[1] * road_vec[0]
+    # 计算叉积：block_vec × road_vec
+    cross = block_vec[0] * road_vec[1] - block_vec[1] * road_vec[0]
 
-    # 如果叉积为正，地块在道路方向的左侧；否则在右侧
+    # 如果叉积为正，街坊/地块在道路方向的左侧；否则在右侧
     return 'L' if cross > 0 else 'R'
 
 
@@ -171,7 +171,7 @@ def get_tangent_at_distance(road_geom, dist, direction):
     return vec * direction
 
 
-def determine_side_robust(pt_proj, heading, road_gdf_proj, road_sindex, candidates, landuse_id_col, verbose=False):
+def determine_side_robust(pt_proj, heading, road_gdf_proj, road_sindex, candidates, block_id_col, verbose=False):
     """
     终极稳健算法：基于道路流向 + 质心投影的局部切线法
     解决弯道和零距离问题
@@ -182,12 +182,12 @@ def determine_side_robust(pt_proj, heading, road_gdf_proj, road_sindex, candidat
         road_gdf_proj: 投影后的道路GeoDataFrame
         road_sindex: 道路的空间索引
         candidates: 候选地块GeoDataFrame
-        landuse_id_col: 地块ID列名
+        block_id_col: 地块ID列名
         verbose: 是否打印详细日志
 
     Returns:
-        left_candidates: [(landuse_id, distance), ...] 按距离排序
-        right_candidates: [(landuse_id, distance), ...] 按距离排序
+        left_candidates: [(block_id, distance), ...] 按距离排序
+        right_candidates: [(block_id, distance), ...] 按距离排序
     """
     if verbose:
         print(f"\n  街景点坐标: ({pt_proj.x:.2f}, {pt_proj.y:.2f})")
@@ -222,7 +222,7 @@ def determine_side_robust(pt_proj, heading, road_gdf_proj, road_sindex, candidat
         print("\n  逐个地块判断 (使用局部切线法):")
 
     for idx, row in candidates.iterrows():
-        landuse_id = row[landuse_id_col]
+        block_id = row[block_id_col]
         geom = row.geometry
         centroid = geom.centroid
 
@@ -254,14 +254,14 @@ def determine_side_robust(pt_proj, heading, road_gdf_proj, road_sindex, candidat
         dist_to_border = pt_proj.distance(geom)
 
         if verbose:
-            print(f"    地块 {landuse_id}: 质心投影位置={proj_dist:.1f}m, "
+            print(f"    地块 {block_id}: 质心投影位置={proj_dist:.1f}m, "
                   f"局部切线=[{final_vec[0]:.2f},{final_vec[1]:.2f}], "
                   f"叉积={cross:.1f} → {side}")
 
         if side == 'L':
-            left_candidates.append((landuse_id, dist_to_border))
+            left_candidates.append((block_id, dist_to_border))
         else:
-            right_candidates.append((landuse_id, dist_to_border))
+            right_candidates.append((block_id, dist_to_border))
 
     # 按距离排序
     left_candidates.sort(key=lambda x: x[1])
@@ -271,7 +271,7 @@ def determine_side_robust(pt_proj, heading, road_gdf_proj, road_sindex, candidat
 
 
 def determine_side_strict(sv_point, sv_heading, candidate_geoms, candidate_ids,
-                          road_gdf_proj=None, road_sindex=None, landuse_id_col='OBJECTID',
+                          road_gdf_proj=None, road_sindex=None, block_id_col='OBJECTID',
                           use_local_tangent=True):
     """
     判断候选地块是在街景点的左侧还是右侧
@@ -286,7 +286,7 @@ def determine_side_strict(sv_point, sv_heading, candidate_geoms, candidate_ids,
         candidate_ids: 候选地块ID列表
         road_gdf_proj: 投影后的道路GeoDataFrame（局部切线法需要）
         road_sindex: 道路空间索引（局部切线法需要）
-        landuse_id_col: 地块ID列名
+        block_id_col: 地块ID列名
         use_local_tangent: 是否使用局部切线法
 
     Returns:
@@ -296,7 +296,7 @@ def determine_side_strict(sv_point, sv_heading, candidate_geoms, candidate_ids,
         # 构建临时的candidates GeoDataFrame
         candidates_data = []
         for geom, oid in zip(candidate_geoms, candidate_ids):
-            candidates_data.append({landuse_id_col: oid, 'geometry': geom})
+            candidates_data.append({block_id_col: oid, 'geometry': geom})
 
         if not candidates_data:
             return None, float('inf'), None, float('inf')
@@ -305,7 +305,7 @@ def determine_side_strict(sv_point, sv_heading, candidate_geoms, candidate_ids,
 
         left_list, right_list = determine_side_robust(
             sv_point, sv_heading, road_gdf_proj, road_sindex,
-            candidates_gdf, landuse_id_col, verbose=False
+            candidates_gdf, block_id_col, verbose=False
         )
 
         l_id, l_dist = (left_list[0] if left_list else (None, float('inf')))
