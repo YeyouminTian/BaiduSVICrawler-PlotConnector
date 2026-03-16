@@ -601,23 +601,36 @@ if __name__ == '__main__':
 
     # 使用example.gdb进行测试
     main(
-        block_gdb_path='example.gdb',
-        block_layer='block',
-        block_id_col='Block_ID',
-        road_layer='road',
-        road_id_col='Road_ID',
-        streetview_gdb_layer='svi_point',      # 使用GDB图层
-        streetview_id_col='Svi_ID',            # 街景点ID字段
-        baidu_ak=baidu_ak,
-        output_dir='output_test',
-        zoom=3,
-        save_every=10,
-        build_topology=True,
-        traversal_direction='clockwise',
-        view_mode='all',
-        test_limit=5,  # 测试模式：只处理前5个点
-        distance_threshold=100,
-        search_buffer=500,
-        use_local_tangent=True,
-        verbose_matching=True
+        # ========== 数据源参数 ==========
+        block_gdb_path='example.gdb',           # 地块GDB文件路径
+        block_layer='block',                      # 地块图层名称
+        block_id_col='Block_ID',                  # 地块ID字段名
+        road_layer='road',                        # 道路图层名称
+        road_id_col='Road_ID',                    # 道路ID字段名
+        # 街景点数据源（二选一）：GDB图层 或 CSV文件
+        streetview_gdb_layer='svi_point',        # 街景点GDB图层名（推荐）
+        streetview_id_col='Svi_ID',              # 街景点ID字段名
+        # streetview_csv_path='example.csv',     # 街景点CSV文件路径
+
+        # ========== 百度API ==========
+        baidu_ak=baidu_ak,                        # 百度地图API密钥
+
+        # ========== 输出控制 ==========
+        output_dir='output_test',                 # 输出目录
+        zoom=3,                                   # 街景缩放级别(1-4)，值越大越清晰
+        save_every=10,                            # 每处理N个点保存一次进度
+
+        # ========== 拓扑构建 ==========
+        build_topology=True,                      # 是否构建拓扑关系
+        traversal_direction='clockwise',          # 遍历方向: 'clockwise'(顺时针) 或 'counterclockwise'(逆时针)
+
+        # ========== 视图模式 ==========
+        view_mode='all',                          # 'block_only'(仅左右)、'street_only'(仅前后)、'all'(全部)
+
+        # ========== 调试参数 ==========
+        test_limit=5,                             # 测试模式：只处理前N个点，设为None则处理全部
+        distance_threshold=100,                   # 街景点与地块的最大距离阈值(米)
+        search_buffer=500,                        # 街景点搜索道路的缓冲区半径(米)
+        use_local_tangent=True,                   # 是否使用局部切线法(推荐)，False则使用纯Heading法
+        verbose_matching=True                     # 是否输出详细的匹配日志
     )

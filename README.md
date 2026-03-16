@@ -103,27 +103,26 @@ pip install -r requirements.txt
 ```
 项目目录/
 │
-├─ main.py                           # 模块化主程序 ⭐推荐使用
-├─ main_merged.py                    # 单文件版本（保留作参考）
+├─ main.py                           # 模块化主程序
 │
 ├─ geometry_utils.py                 # 几何与投影工具
-├─ block_utils.py                  # 地块数据读取模块
+├─ block_utils.py                    # 地块数据读取模块
 ├─ streetview_utils.py               # 街景API与点读取模块
 ├─ image_utils.py                    # 图像处理模块
 ├─ spatial_analysis.py               # 空间分析与左右判别模块（局部切线法）
 ├─ topology_utils.py                 # 拓扑关系处理模块
 │
-├─ remap_new_block.py              # 地块更新后的重新映射工具
+├─ remap_new_block.py                # 地块更新后的重新映射工具
 │
-├─ example.gdb                        # 示例地理数据库 ⭐
-│   ├─ block                          # 地块图层（Block_ID）
-│   ├─ road                           # 道路图层（Road_ID）
-│   └─ svi_point                      # 街景点图层（Svi_ID）
-├─ example.csv                        # 示例街景点数据（CSV格式）
-├─ requirements.txt                  # 依赖包列表
-├─ README.md                         # 项目文档
+├─ example.gdb                       # 示例地理数据库 ⭐
+│   ├─ block                         # 地块图层（Block_ID）
+│   ├─ road                          # 道路图层（Road_ID）
+│   └─ svi_point                     # 街景点图层（Svi_ID）
+├─ example.csv                       # 示例街景点数据（CSV格式）
+├─ requirements.txt                 # 依赖包列表
+├─ README.md                        # 项目文档
 │
-└─ output/                           # 输出目录（自动生成）
+└─ output/                          # 输出目录（自动生成）
     ├─ images/
     │   ├─ block/                  # 地块相关视图（左右）
     │   │   ├─ P001_R005_S123_L.jpg
@@ -150,130 +149,28 @@ pip install -r requirements.txt
 
 ## 四、核心算法原理
 
-### 1. 空间左右判别算法
+### 1. 空间左右判别
 
-#### 1.1 局部切线法（Local Tangent Method）⭐推荐
+程序提供两种左右判别算法：
 
-**适用场景**：弯道、复杂道路几何、高精度需求
+| 算法 | 适用场景 | 说明 |
+|------|----------|------|
+| **局部切线法**（默认） | 弯道、复杂道路 | 使用道路几何的局部切线方向，适合高精度需求 |
+| **纯Heading法** | 直线道路、简单场景 | 使用街景拍摄方向，计算简单快速 |
 
-**算法原理**：
-```python
-def determine_side_robust(pt_proj, heading, road_gdf, road_sindex, candidates):
-    """
-    基于道路几何的局部切线方向进行左右判断
+**切换方式**：设置 `use_local_tangent=True/False`
 
-    算法步骤：
-    1. 找到街景点最近的道路
-    2. 判断道路几何方向与车行方向的关系（同向/反向）
-    3. 将地块质心投影到道路上，获取投影位置
-    4. 在投影位置获取道路的局部切线向量
-    5. 计算切线向量与地块向量的叉积，判断左右
-    """
-```
+### 2. 拓扑关系
 
-**优势**：
-- 解决弯道问题：每个位置使用局部方向而非全局方向
-- 零距离稳健：使用投影点而非街景点本身
-- 自动方向修正：检测道路几何方向并自动修正
+- 按地块组织街景点，按道路分组
+- 道路和街景点按空间角度排序，形成连续的遍历序列
+- 支持顺时针/逆时针遍历方向
 
-#### 1.2 纯Heading法（通用方法）
+### 3. 图像处理
 
-**适用场景**：直线道路、无道路几何数据、快速处理
-
-```python
-def judge_left_right(streetview_pt, road_dir, block_centroid):
-    """
-    使用叉积判断地块相对于街景点的左右位置
-
-    算法原理：
-    1. 计算道路方向向量（基于街景拍摄方向）
-    2. 计算地块质心到街景点的向量
-    3. 计算叉积：block_vec × road_vec
-    4. 叉积正负决定左右位置
-    """
-```
-
-**数学原理**：
-- 道路方向向量：`road_vec = [cos(θ), sin(θ)]`
-- 地块向量：`block_vec = [dx, dy]`
-- 叉积：`cross = block_vec[0] * road_vec[1] - block_vec[1] * road_vec[0]`
-- 判断：`cross > 0` 为左侧，`cross < 0` 为右侧
-
-#### 1.3 算法选择
-
-在 `main.py` 中通过参数控制：
-```python
-main(
-    use_local_tangent=True,  # True=局部切线法，False=纯Heading法
-    ...
-)
-```
-
-#### 1.2 多地块关联策略
-- **最近邻搜索**：找到距离街景点最近的两个地块
-- **左右分配**：将两个地块分别分配到左右视图
-- **距离优化**：当左右判断冲突时，优先选择距离更近的地块
-
-### 2. 拓扑关系构建算法
-
-#### 2.1 地块-道路-街景点三元关联
-```python
-def build_block_topology(block_id, streetview_road_mapping, block_gdf, block_id_col, streetview_block_mapping, traversal_direction='clockwise'):
-    """
-    为单个地块建立完整的拓扑关系
-    
-    算法步骤：
-    1. 获取地块质心坐标
-    2. 收集地块关联的所有街景点
-    3. 按道路分组街景点
-    4. 计算道路质心并排序
-    5. 对道路内街景点排序
-    """
-```
-
-#### 2.2 道路排序算法
-**基于角度的道路排序**：
-- 计算地块质心到各道路质心的角度
-- 按顺时针或逆时针方向排序
-- 实现类似人类绕地块观察的连续序列
-
-**道路内街景点排序**：
-- 使用相邻两点的相对角度排序，避免跨越0度线问题
-- 计算街景点相对于地块质心的极坐标角度
-- 检测并修正跨越0度线的情况，确保空间连续性
-
-#### 2.3 遍历方向控制
-- **顺时针遍历**：`traversal_direction='clockwise'`
-- **逆时针遍历**：`traversal_direction='counterclockwise'`
-- 支持自定义遍历方向，适应不同的分析需求
-- 道路排序和街景点排序都遵从统一的遍历方向参数
-
-### 3. 图像处理与透视变换
-
-#### 3.1 全景图像下载
-- 使用百度街景API获取全景图像
-- 支持不同缩放级别（zoom参数）
-- 自动处理坐标系转换（WGS84 → BD09MC）
-
-#### 3.2 透视变换算法
-```python
-def equirectangular_to_perspective(equirectangular_img, fov_h, fov_v, heading, pitch, out_size):
-    """
-    等距圆柱投影到透视投影的变换
-    
-    参数说明：
-    - fov_h: 水平视场角（120度）
-    - fov_v: 垂直视场角（90度）
-    - heading: 水平旋转角度
-    - pitch: 垂直旋转角度
-    """
-```
-
-**变换原理**：
-1. 等距圆柱投影坐标转换为球面坐标
-2. 应用旋转矩阵（heading + pitch）
-3. 透视投影变换
-4. 输出指定尺寸的透视图像
+- 百度街景全景图下载，支持缩放级别1-4
+- 全景图展开为四个方向的透视视图（L/R/F/B）
+- 自动坐标系转换（WGS84 → 百度墨卡托）
 
 ---
 
@@ -424,6 +321,31 @@ if __name__ == '__main__':
 - GDB方式：街景点与地块、道路在同一GDB中
 - CSV方式：适合已有CSV街景点数据的情况
 
+#### 参数完整说明表
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `block_gdb_path` | str | 必填 | 地块GDB文件路径 |
+| `block_layer` | str | 必填 | 地块图层名称 |
+| `block_id_col` | str | 必填 | 地块ID字段名 |
+| `road_layer` | str | 必填 | 道路图层名称 |
+| `road_id_col` | str | 必填 | 道路ID字段名 |
+| `streetview_gdb_layer` | str | 可选 | 街景点GDB图层名（与CSV二选一） |
+| `streetview_id_col` | str | 必填 | 街景点ID字段名 |
+| `streetview_csv_path` | str | 可选 | 街景点CSV文件路径（与GDB二选一） |
+| `baidu_ak` | str | 必填 | 百度地图API密钥 |
+| `output_dir` | str | 'output' | 输出目录 |
+| `zoom` | int | 3 | 街景缩放级别(1-4)，值越大越清晰 |
+| `save_every` | int | 50 | 每处理N个点保存一次进度 |
+| `build_topology` | bool | True | 是否构建拓扑关系 |
+| `traversal_direction` | str | 'clockwise' | 遍历方向：'clockwise'(顺时针) 或 'counterclockwise'(逆时针) |
+| `view_mode` | str | 'all' | 视图模式：'block_only'(仅左右)、'street_only'(仅前后)、'all'(全部) |
+| `test_limit` | int | None | 测试模式，指定只处理前N个点，调试用 |
+| `distance_threshold` | float | 100 | 街景点与地块的最大距离阈值(米) |
+| `search_buffer` | float | 500 | 街景点搜索道路的缓冲区半径(米) |
+| `use_local_tangent` | bool | True | 是否使用局部切线法(推荐)，False则使用纯Heading法 |
+| `verbose_matching` | bool | False | 是否输出详细的匹配日志 |
+
 **view_mode 参数说明**：
 - `'block_only'`: 仅爬取左右视图，用于地块分析
 - `'street_only'`: 仅爬取前后视图，用于道路景观分析
@@ -433,8 +355,6 @@ if __name__ == '__main__':
 ```bash
 python main.py
 ```
-
-**推荐使用模块化版本**，功能与 `main_merged.py` 完全一致，但代码结构更清晰，易于维护。
 
 ### 3. 查看输出结果
 - **地块视图图像**：`output/images/block/` 文件夹（左右视图）
